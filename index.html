@@ -1,0 +1,27 @@
+<!DOCTYPE html> <!-- Вказує браузеру, що це сучасний HTML5 документ -->
+<html lang="uk"> <!-- Відкриває сторінку, вказуючи українську мову -->
+<head>
+    <meta charset="UTF-8" /> <!-- Вмикає підтримку кирилиці та спецсимволів -->
+    <title>Asteroids</title> <!-- Назва вкладки у браузері -->
+    <style>
+        /* Прибираємо відступи екрану, ховаємо смуги прокрутки та робимо фон темно-сірим */
+        body { margin: 0; overflow: hidden; background: #111; color: white; }
+        
+        /* Робимо полотно блоковим, щоб воно займало весь доступний простір */
+        canvas { display: block; }
+        
+        /* Розміщуємо статистику (FPS) у лівому верхньому куті та забороняємо клікати по ній (pointer-events: none) */
+        #hud { position: absolute; top: 10px; left: 10px; font-family: monospace; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <!-- Блок, куди програма виводитиме статистику кадрів та прорахунків -->
+    <div id="hud">Завантаження...</div>
+    
+    <!-- Полотно для малювання графіки нашої гри -->
+    <canvas id="gameCanvas"></canvas>
+    
+    <!-- Підключаємо головний файл коду. type="module" дозволяє використовувати сучасні імпорти/експорти -->
+    <script type="module" src="/src/main.js"></script>
+</body>
+</html>
