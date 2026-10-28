@@ -9,7 +9,7 @@ export class Lobby extends EventTarget {
   #controller = null; // AbortController, поки лобі "живе"
   #timer = null;      // id таймера наступного оновлення
 
-  constructor({ url = '/api/rooms.json', intervalMs = 3000, timeoutMs = 2000 } = {}) {
+  constructor({ url = '/api/rooms', intervalMs = 3000, timeoutMs = 2000 } = {}) {
     super(); // обов'язково: запускає конструктор EventTarget
     this.url = url;               // звідки брати кімнати
     this.intervalMs = intervalMs; // як часто оновлювати
@@ -70,9 +70,13 @@ export class Lobby extends EventTarget {
 
       // Перевіряємо форму даних: без цього зламаний JSON
       // ламав би інтерфейс далі.
-      if (!Array.isArray(data.rooms)) throw new Error('Невірний формат rooms');
-
-      this.rooms = data.rooms;
+      // Сервер віддає масив напряму; старий формат був { rooms: [...] }. Підтримуємо обидва.
+      const list = Array.isArray(data) ? data : data.rooms;
+      // Перевіряємо форму: без масиву далі працювати не можна.
+      if (!Array.isArray(list)) throw new Error('Невірний формат rooms');
+      // Сервер ще не знає про арену, тож додаємо значення за замовчуванням.
+      // Поля самої кімнати йдуть після нього, тому мають пріоритет.
+      this.rooms = list.map((room) => ({ arena: { asteroidCount: 5 }, ...room }));
       // Повідомляємо всіх підписників (DOM-модуль): список змінився.
       this.dispatchEvent(new CustomEvent('roomsChanged', { detail: this.rooms }));
     } catch (error) {

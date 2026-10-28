@@ -1,0 +1,10 @@
+{
+  "name": "server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --env-file=.env src/index.js",
+    "start": "node --env-file=.env src/index.js"
+  },
+  "dependencies": { "ws": "^8.18.0" }
+}

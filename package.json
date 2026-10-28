@@ -1,14 +1,11 @@
 {
-  "name": "lab-01-game",
-  "version": "0.0.0",
+  "name": "dogfight",
   "private": true,
-  "type": "module",
+  "workspaces": ["client", "server"],
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
-  "devDependencies": {
-    "vite": "^8.3.5"
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client",
+    "build": "npm run build -w client",
+    "start": "npm run start -w server"
   }
 }
