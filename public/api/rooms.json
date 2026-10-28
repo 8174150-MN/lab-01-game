@@ -1,0 +1,10 @@
+{
+  "rooms": [
+    { "id": "room-1", "name": "Альфа Сектор", "players": 2, "maxPlayers": 8,
+      "arena": { "width": 800, "height": 600, "asteroidCount": 5 } },
+    { "id": "room-2", "name": "Пояс Астероїдів", "players": 5, "maxPlayers": 8,
+      "arena": { "width": 1000, "height": 700, "asteroidCount": 10 } },
+    { "id": "room-3", "name": "Чорна Діра", "players": 0, "maxPlayers": 4,
+      "arena": { "width": 600, "height": 500, "asteroidCount": 15 } }
+  ]
+}

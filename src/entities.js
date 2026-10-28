@@ -1,6 +1,13 @@
 import { Entity } from './entity.js';
 import { Vector2 } from './math.js';
 import { withPickup } from './components.js';
+import { emit } from './events.js';
+import { sprites, drawSprite } from './sprites.js';
+
+// Якщо картинка героя в файлі дивиться ВГОРУ, а не вправо, корабель
+// летітиме боком. Тоді значення Math.PI / 2 (90 градусів) це правильна
+// поправка. Якщо дивиться вправо,  0. 
+const SPRITE_ROTATION = Math.PI / 2;
 
 // Клас корабля гравця (наслідує все від базового Entity)
 export class Ship extends Entity {
@@ -12,6 +19,7 @@ export class Ship extends Entity {
         this.isThrusting = false; // Чи натиснута кнопка газу (для вогню з двигуна)
         this.#hp = 3;            // Починаємо гру з 3 життями
         this.cooldown = 0;       // Затримка між пострілами
+        emit('shipSpawned', { hp: this.#hp }); // новий корабель: HUD скидає життя
     }
 
     // Дозволяє подивитися поточну кількість життів
@@ -28,6 +36,7 @@ export class Ship extends Entity {
     // Метод лікування (додає життя при підборі аптечки)
     heal() { 
         this.#hp++; 
+        emit('healed', { hp: this.#hp }); // HUD оновить життя
     }
 
     // Рух корабля від клавіатури
@@ -67,27 +76,48 @@ export class Ship extends Entity {
         
         world.spawn(new Bullet(noseX, noseY, this.angle)); // Створюємо кулю у світі
         this.cooldown = 0.2; // Ставимо затримку 0.2 секунди перед наступним пострілом
+     // Повідомляємо шину: постріл справді відбувся (звук підхопить audio.js).
+        emit('fired');
     }
 
     // Малювання корабля на екрані (Canvas)
     render(ctx) {
         if (this.isDead) return;
-        ctx.save();
-        ctx.translate(this.pos.x, this.pos.y); // Переносимо центр малювання в точку корабля
-        ctx.rotate(this.angle);                // Обертаємо малюнок за кутом корабля
-        
-        // Малюємо трикутний корпус
-        ctx.beginPath();
-        ctx.moveTo(20, 0); ctx.lineTo(-15, -15); ctx.lineTo(-10, 0); ctx.lineTo(-15, 15);
-        ctx.closePath();
-        ctx.strokeStyle = '#00ffcc'; ctx.lineWidth = 2; ctx.stroke();
-        
-        // Малюємо вогонь з двигуна, якщо натиснута стрілка вгору
-        if (this.isThrusting) {
-            ctx.beginPath(); ctx.moveTo(-12, 0); ctx.lineTo(-25 - Math.random() * 10, 0);
-            ctx.strokeStyle = '#ff6600'; ctx.stroke();
+
+        // Беремо картинку героя з полиці. Якщо вона не завантажилась,
+        // тут буде undefined, і спрацює запасний варіант нижче.
+        const img = sprites.hero;
+
+        if (img) {
+            // Висота на екрані: 3 радіуси. Ширину рахуємо за пропорціями картинки.
+            const h = this.radius * 3;
+            const w = h * (img.width / img.height);
+
+            // Малюємо спрайт у позиції корабля, повернутий за кутом.
+            drawSprite(ctx, img, this.pos.x, this.pos.y, w, h, this.angle + SPRITE_ROTATION);
+        } else {
+            // Запасний варіант: трикутник, як було раніше.
+            ctx.save();
+            ctx.translate(this.pos.x, this.pos.y);
+            ctx.rotate(this.angle);
+            ctx.beginPath();
+            ctx.moveTo(20, 0); ctx.lineTo(-15, -15); ctx.lineTo(-10, 0); ctx.lineTo(-15, 15);
+            ctx.closePath();
+            ctx.strokeStyle = '#00ffcc'; ctx.lineWidth = 2; ctx.stroke();
+            ctx.restore();
         }
-        ctx.restore();
+
+        // Вогонь двигуна малюємо в обох випадках.
+        if (this.isThrusting) {
+            ctx.save();
+            ctx.translate(this.pos.x, this.pos.y);
+            ctx.rotate(this.angle);
+            ctx.beginPath();
+            ctx.moveTo(-this.radius, 0);
+            ctx.lineTo(-this.radius - 10 - Math.random() * 10, 0);
+            ctx.strokeStyle = '#ff6600'; ctx.lineWidth = 2; ctx.stroke();
+            ctx.restore();
+        }
     }
 }
 
@@ -105,10 +135,20 @@ export class Bullet extends Entity {
         if (this.ttl <= 0) this.isDead = true; // Час вийшов — знищуємо кулю
         super.update(dt, cw, ch);
     }
-
     render(ctx) {
-        ctx.beginPath(); ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
-        ctx.fillStyle = '#ff0'; ctx.fill(); // Малюємо жовту крапку
+        const img = sprites.bullets;
+        if (img) {
+            // Спрайтшит: 4 кадри по 32 пікселі в один ряд. Номер кадру
+            // залежить від віку кулі (12 кадрів на секунду), % 4 зациклює.
+            const frameIndex = Math.floor((1.5 - this.ttl) * 12) % 4;
+            drawSprite(ctx, img, this.pos.x, this.pos.y, 16, 16, 0,
+                       { x: frameIndex * 32, y: 0, w: 32, h: 32 });
+        } else {
+            // Запасний варіант: жовта крапка, як раніше.
+            ctx.beginPath(); ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
+            ctx.fillStyle = '#ff0'; ctx.fill();
+        }
+    
     }
 }
 
@@ -118,9 +158,18 @@ export class Asteroid extends Entity {
         super(x, y, radius, 'asteroid');
         this.vel = new Vector2((Math.random() - 0.5) * 100, (Math.random() - 0.5) * 100); // Летить випадково
     }
-    render(ctx) {
-        ctx.beginPath(); ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
-        ctx.strokeStyle = '#aaa'; ctx.lineWidth = 2; ctx.stroke(); // Малюємо сіре коло
+       render(ctx) {
+        const img = sprites.asteroid;
+
+        if (img) {
+            // Діаметр спрайта трохи більший за коло зіткнення (радіус * 2.4).
+            const size = this.radius * 2.4;
+            drawSprite(ctx, img, this.pos.x, this.pos.y, size, size);
+        } else {
+            // Запасний варіант: сіре коло.
+            ctx.beginPath(); ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
+            ctx.strokeStyle = '#aaa'; ctx.lineWidth = 2; ctx.stroke();
+        }
     }
 }
 

@@ -1,0 +1,14 @@
+{
+  "images": {
+    "hero": "/assets/hero.png",
+    "asteroid": "/assets/asteroid.png",
+    "bullets": "/assets/bullets.png"
+  },
+  "sounds": {
+    "shoot": "/assets/laser.mp3",
+    "explosion": "/assets/explosion.mp3"
+  },
+  "json": {
+    "arena": "/assets/arena.json"
+  }
+}

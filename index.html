@@ -1,27 +1,66 @@
-<!DOCTYPE html> <!-- Вказує браузеру, що це сучасний HTML5 документ -->
-<html lang="uk"> <!-- Відкриває сторінку, вказуючи українську мову -->
-<head>
-    <meta charset="UTF-8" /> <!-- Вмикає підтримку кирилиці та спецсимволів -->
-    <title>Asteroids</title> <!-- Назва вкладки у браузері -->
+<!DOCTYPE html>
+<html lang="uk">
+  <head>
+    <!-- Кодування символів, щоб українські літери відображались правильно -->
+    <meta charset="UTF-8" />
+    <!-- Налаштування для мобільних екранів -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Asteroids</title>
     <style>
-        /* Прибираємо відступи екрану, ховаємо смуги прокрутки та робимо фон темно-сірим */
-        body { margin: 0; overflow: hidden; background: #111; color: white; }
-        
-        /* Робимо полотно блоковим, щоб воно займало весь доступний простір */
-        canvas { display: block; }
-        
-        /* Розміщуємо статистику (FPS) у лівому верхньому куті та забороняємо клікати по ній (pointer-events: none) */
-        #hud { position: absolute; top: 10px; left: 10px; font-family: monospace; pointer-events: none; }
+      /* Прибираємо відступи й смуги прокручування, фон чорний */
+      html, body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #000;
+      }
+      /* Canvas займає весь екран */
+      #gameCanvas {
+        display: block;
+      }
+      /* HUD (життя й рахунок) лежить поверх canvas у лівому верхньому куті */
+      #hud {
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        color: #fff;
+        font-family: monospace;
+        font-size: 16px;
+      }
+        /* Лобі: затемнений екран поверх гри */
+      #lobby {
+        position: fixed; inset: 0;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 12px;
+        background: rgba(0, 0, 0, 0.85);
+        color: #fff; font-family: monospace;
+      }
+      /* Без цього атрибут hidden не спрацює, бо display: flex сильніший */
+      #lobby[hidden] { display: none; }
+      #lobby ul { list-style: none; padding: 0; margin: 0; }
+      #lobby li { margin: 6px 0; }
+    /* Екран помилки завантаження */
+      #errorScreen {
+        position: fixed; inset: 0;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 16px;
+        background: #000; color: #fff; font-family: monospace;
+      }
+      #errorScreen[hidden] { display: none; }
     </style>
-</head>
-<body>
-    <!-- Блок, куди програма виводитиме статистику кадрів та прорахунків -->
-    <div id="hud">Завантаження...</div>
-    
-    <!-- Полотно для малювання графіки нашої гри -->
+  </head>
+  <body>
+    <!-- Ігрове поле: main.js шукає його за id "gameCanvas" -->
     <canvas id="gameCanvas"></canvas>
-    
-    <!-- Підключаємо головний файл коду. type="module" дозволяє використовувати сучасні імпорти/експорти -->
+
+    <!-- Текстова панель: main.js шукає її за id "hud" -->
+    <div id="hud"></div>
+        <!-- Лобі: його наповнює ui/lobby.js -->
+    <div id="lobby" hidden></div>
+    <div id="errorScreen" hidden></div>
+
+
+    <!-- Підключаємо main.js як модуль (потрібно для import/export) -->
     <script type="module" src="/src/main.js"></script>
-</body>
+  </body>
 </html>
