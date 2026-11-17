@@ -1,205 +1,247 @@
-import { Entity } from './entity.js';
-import { Vector2 } from './math.js';
-import { withPickup } from './components.js';
-import { emit } from './events.js';
-import { sprites, drawSprite } from './sprites.js';
+// Базовий клас дає всім сутностям ID, позицію, швидкість і коловий радіус.
+import { Entity } from './entity.js'; // Наслідування використовується лише на один рівень.
+import { Vector2 } from './math.js'; // Вектори потрібні руху куль, астероїдів і частинок.
+import { integrate } from './sim/physics.js'; // Чиста фізична функція не знає про DOM чи canvas.
+import { bounceAtBounds } from './sim/arena.js'; // Астероїди відбиваються від стін арени.
+import { withPickup } from './components.js'; // Pickup додається композицією.
+import { emit } from './events.js'; // Ігрові сутності сповіщають HUD та звук через події.
+import { sprites, drawSprite } from './sprites.js'; // Рендер використовує завантажені sprite sheets.
 
-// Якщо картинка героя в файлі дивиться ВГОРУ, а не вправо, корабель
-// летітиме боком. Тоді значення Math.PI / 2 (90 градусів) це правильна
-// поправка. Якщо дивиться вправо,  0. 
-const SPRITE_ROTATION = Math.PI / 2;
-
-// Клас корабля гравця (наслідує все від базового Entity)
+// Клас гравця додає керування, життя, стрільбу та малювання до Entity.
 export class Ship extends Entity {
-    #hp; // Секретна кількість здоров'я (життів) корабля
+  #hp = 3; // Приватне поле не дає змінити життя напряму.
 
-    constructor(x, y) {
-        super(x, y, 15, 'ship'); // Викликаємо конструктор бази (Entity) з радіусом 15 і типом 'ship'
-        this.angle = 0;          // Початковий кут повороту корабля
-        this.isThrusting = false; // Чи натиснута кнопка газу (для вогню з двигуна)
-        this.#hp = 3;            // Починаємо гру з 3 життями
-        this.cooldown = 0;       // Затримка між пострілами
-        emit('shipSpawned', { hp: this.#hp }); // новий корабель: HUD скидає життя
-    }
+  // Створюємо корабель у заданій точці.
+  constructor(x, y) {
+    super(x, y, 15, 'ship'); // Базовий клас створює ID і фізичні поля.
+    this.cooldown = 0; // Таймер обмежує частоту пострілів.
+    this.isThrusting = false; // Прапорець вмикає полум'я двигуна.
+    emit('shipSpawned', { hp: this.#hp }); // HUD отримує початкову кількість життів.
+  } // Завершуємо створення корабля.
 
-    // Дозволяє подивитися поточну кількість життів
-    get hp() { 
-        return this.#hp; 
-    }
-    
-    // Метод отримання шкоди
-    takeDamage() {
-        this.#hp--; // Віднімаємо 1 життя
-        if (this.#hp <= 0) this.isDead = true; // Якщо життів не залишилось — корабель помер
-    }
-    
-    // Метод лікування (додає життя при підборі аптечки)
-    heal() { 
-        this.#hp++; 
-        emit('healed', { hp: this.#hp }); // HUD оновить життя
-    }
+  // Повертаємо життя без доступу до приватного поля.
+  get hp() {
+    return this.#hp;
+  } // Геттер є публічним інтерфейсом для HUD.
 
-    // Рух корабля від клавіатури
-    update(dt, cw, ch, input) {
-        if (this.isDead) return; // Якщо мертвий — нічого не робимо
-        
-        const rotationSpeed = 4; // Швидкість повороту
-        const thrust = 400;      // Потужність прискорення
+  // Застосовуємо одне влучання.
+  takeDamage() {
+    this.#hp -= 1; // Віднімаємо одне життя.
+    if (this.#hp <= 0) this.isDead = true; // Позначаємо корабель мертвим після останнього влучання.
+  } // Завершуємо обробку шкоди.
 
-        // Поворот стрілками вліво/вправо
-        if (input.ArrowLeft) this.angle -= rotationSpeed * dt;
-        if (input.ArrowRight) this.angle += rotationSpeed * dt;
+  // Додаємо одне життя аптечкою.
+  heal() {
+    this.#hp += 1; // Збільшуємо приватне поле лише через метод корабля.
+    emit('healed', { hp: this.#hp }); // HUD оновлює число життів.
+  } // Завершуємо лікування.
 
-        // Газ при натисканні стрілки вгору
-        if (input.ArrowUp) {
-            // Рахуємо напрямок польоту за тригонометрією (косинус і синус кута)
-            const thrustVec = new Vector2(Math.cos(this.angle), Math.sin(this.angle)).scale(thrust * dt);
-            this.vel = this.vel.add(thrustVec); // Додаємо прискорення до швидкості
-            this.isThrusting = true;            // Вмикаємо вогонь двигуна
-        } else {
-            this.isThrusting = false; // Вимикаємо вогонь
-        }
+  // Перераховуємо стан корабля одним фіксованим кроком.
+  update(dt, width, height, input = {}) {
+    if (this.isDead) return; // Мертвий корабель не рухається.
+    const state = integrate(
+      { x: this.pos.x, y: this.pos.y, vx: this.vel.x, vy: this.vel.y, angle: this.angle },
+      {
+        left: input.left ?? input.ArrowLeft,
+        right: input.right ?? input.ArrowRight,
+        thrust: input.thrust ?? input.ArrowUp,
+      },
+      dt,
+    ); // Отримуємо новий стан без DOM-залежностей.
+    this.pos = new Vector2(state.x, state.y); // Зберігаємо нову позицію.
+    this.vel = new Vector2(state.vx, state.vy); // Зберігаємо обмежену швидкість.
+    this.angle = state.angle; // Зберігаємо напрямок корабля.
+    this.isThrusting = state.thrusting; // Передаємо стан двигуна рендеру.
+    this.cooldown = Math.max(0, this.cooldown - dt); // Зменшуємо затримку між пострілами.
+  } // Завершуємо крок фізики корабля.
 
-        this.vel = this.vel.scale(0.98); // Космічне тертя (поступове сповільнення)
-        if (this.cooldown > 0) this.cooldown -= dt; // Зменшуємо час очікування для наступного пострілу
+  // Створюємо кулю перед носом корабля з успадкованою швидкістю.
+  fire(world) {
+    if (this.isDead || this.cooldown > 0) return null; // Не стріляємо мертвим кораблем або під час кулдауну.
+    const muzzle = this.pos.add(Vector2.fromAngle(this.angle).scale(this.radius)); // Знаходимо точку на носі.
+    const bullet = new Bullet(muzzle.x, muzzle.y, this.angle, this.vel, this.id); // Передаємо кулі напрямок, швидкість і власника.
+    world.spawn(bullet); // Додаємо кулю в карту світу.
+    this.cooldown = 0.2; // Встановлюємо паузу між пострілами.
+    emit('fired', { x: muzzle.x, y: muzzle.y }); // Шина запускає звук без імпорту audio.js.
+    return bullet; // Повертаємо кулю для наочності та навчальних прикладів.
+  } // Завершуємо метод стрільби.
 
-        super.update(dt, cw, ch); // Викликаємо базовий рух і загортання стін з Entity
-    }
+  // Малюємо корабель у проміжному стані між двома кроками симуляції.
+  render(ctx, alpha = 1, width = 0, height = 0) {
+    if (this.isDead) return; // Мертвий корабель вже не видно.
+    const state = this.renderState(alpha, width, height); // Інтерполюємо позицію та кут.
+    const image = sprites.hero; // Беремо завантажений спрайт корабля.
+    ctx.save(); // Зберігаємо трансформації полотна для інших об'єктів.
+    ctx.translate(state.x, state.y); // Пересуваємо початок координат у центр корабля.
+    ctx.rotate(state.angle + Math.PI / 2); // Повертаємо спрайт, який у файлі спрямований угору.
+    if (image)
+      drawSprite(ctx, image, 0, 0, this.radius * 3, this.radius * 3, 0, {
+        x: 0,
+        y: 0,
+        w: image.width,
+        h: image.height,
+      }); // Малюємо корабель із прямокутника sprite sheet.
+    else {
+      ctx.beginPath();
+      ctx.moveTo(20, 0);
+      ctx.lineTo(-15, -13);
+      ctx.lineTo(-10, 0);
+      ctx.lineTo(-15, 13);
+      ctx.closePath();
+      ctx.strokeStyle = '#66fcf1';
+      ctx.stroke();
+    } // Малюємо запасний трикутник, коли спрайт не завантажився.
+    if (this.isThrusting) {
+      ctx.beginPath();
+      ctx.moveTo(-this.radius, -4);
+      ctx.lineTo(-this.radius - 12, 0);
+      ctx.lineTo(-this.radius, 4);
+      ctx.strokeStyle = '#ff8c42';
+      ctx.stroke();
+    } // Додаємо полум'я під час тяги.
+    ctx.restore(); // Повертаємо початковий стан canvas.
+  } // Завершуємо малювання корабля.
+} // Завершуємо клас Ship.
 
-    // Стрільба кулею з носа корабля
-    fire(world) {
-        if (this.isDead || this.cooldown > 0) return; // Якщо мертвий або кулдаун — не стріляємо
-        
-        // Рахуємо точні координати носа корабля за допомогою тригонометрії
-        const noseX = this.pos.x + Math.cos(this.angle) * this.radius;
-        const noseY = this.pos.y + Math.sin(this.angle) * this.radius;
-        
-        world.spawn(new Bullet(noseX, noseY, this.angle)); // Створюємо кулю у світі
-        this.cooldown = 0.2; // Ставимо затримку 0.2 секунди перед наступним пострілом
-     // Повідомляємо шину: постріл справді відбувся (звук підхопить audio.js).
-        emit('fired');
-    }
-
-    // Малювання корабля на екрані (Canvas)
-    render(ctx) {
-        if (this.isDead) return;
-
-        // Беремо картинку героя з полиці. Якщо вона не завантажилась,
-        // тут буде undefined, і спрацює запасний варіант нижче.
-        const img = sprites.hero;
-
-        if (img) {
-            // Висота на екрані: 3 радіуси. Ширину рахуємо за пропорціями картинки.
-            const h = this.radius * 3;
-            const w = h * (img.width / img.height);
-
-            // Малюємо спрайт у позиції корабля, повернутий за кутом.
-            drawSprite(ctx, img, this.pos.x, this.pos.y, w, h, this.angle + SPRITE_ROTATION);
-        } else {
-            // Запасний варіант: трикутник, як було раніше.
-            ctx.save();
-            ctx.translate(this.pos.x, this.pos.y);
-            ctx.rotate(this.angle);
-            ctx.beginPath();
-            ctx.moveTo(20, 0); ctx.lineTo(-15, -15); ctx.lineTo(-10, 0); ctx.lineTo(-15, 15);
-            ctx.closePath();
-            ctx.strokeStyle = '#00ffcc'; ctx.lineWidth = 2; ctx.stroke();
-            ctx.restore();
-        }
-
-        // Вогонь двигуна малюємо в обох випадках.
-        if (this.isThrusting) {
-            ctx.save();
-            ctx.translate(this.pos.x, this.pos.y);
-            ctx.rotate(this.angle);
-            ctx.beginPath();
-            ctx.moveTo(-this.radius, 0);
-            ctx.lineTo(-this.radius - 10 - Math.random() * 10, 0);
-            ctx.strokeStyle = '#ff6600'; ctx.lineWidth = 2; ctx.stroke();
-            ctx.restore();
-        }
-    }
-}
-
-// Клас кулі
+// Куля має швидкість, власника і короткий час життя.
 export class Bullet extends Entity {
-    constructor(x, y, angle) {
-        super(x, y, 2, 'bullet'); // Маленький радіус 2, тип 'bullet'
-        const speed = 500;
-        this.vel = new Vector2(Math.cos(angle) * speed, Math.sin(angle) * speed); // Летить швидко у потрібному напрямку
-        this.ttl = 1.5; // Time To Live: час життя кулі (1.5 секунды, після чого вона зникне)
-    }
+  // Створюємо кулю з успадкованою швидкістю корабля.
+  constructor(x, y, angle, inheritedVelocity = new Vector2(), ownerId = null) {
+    super(x, y, 3, 'bullet'); // Задаємо базові поля кулі.
+    this.vel = Vector2.fromAngle(angle).scale(500).add(inheritedVelocity); // Поєднуємо швидкість пострілу зі швидкістю корабля.
+    this.ownerId = ownerId; // Зберігаємо ID стрільця, щоб куля не влучала в нього.
+    this.ttl = 1.5; // Куля зникає через півтори секунди.
+    this.angle = angle; // Кут використовується для малювання кадру.
+  } // Завершуємо створення кулі.
 
-    update(dt, cw, ch) {
-        this.ttl -= dt; // Зменшуємо час життя
-        if (this.ttl <= 0) this.isDead = true; // Час вийшов — знищуємо кулю
-        super.update(dt, cw, ch);
-    }
-    render(ctx) {
-        const img = sprites.bullets;
-        if (img) {
-            // Спрайтшит: 4 кадри по 32 пікселі в один ряд. Номер кадру
-            // залежить від віку кулі (12 кадрів на секунду), % 4 зациклює.
-            const frameIndex = Math.floor((1.5 - this.ttl) * 12) % 4;
-            drawSprite(ctx, img, this.pos.x, this.pos.y, 16, 16, 0,
-                       { x: frameIndex * 32, y: 0, w: 32, h: 32 });
-        } else {
-            // Запасний варіант: жовта крапка, як раніше.
-            ctx.beginPath(); ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
-            ctx.fillStyle = '#ff0'; ctx.fill();
-        }
-    
-    }
-}
+  // Зменшуємо час життя кулі.
+  update(dt) {
+    this.ttl -= dt; // Кожен крок фізики віднімає його тривалість.
+    if (this.ttl <= 0) this.isDead = true; // Прострочена куля піде під час sweep.
+    super.update(dt); // Рухаємо кулю базовим методом.
+  } // Завершуємо оновлення кулі.
 
-// Клас астероїда
+  // Малюємо кадр зі sprite sheet куль.
+  render(ctx, alpha = 1, width = 0, height = 0) {
+    const state = this.renderState(alpha, width, height); // Отримуємо згладжену позицію.
+    const image = sprites.bullets; // Читаємо завантажений лист куль.
+    if (image) {
+      const frame = Math.floor((1.5 - this.ttl) * 12) % 4;
+      drawSprite(ctx, image, state.x, state.y, 16, 16, this.angle, { x: frame * 32, y: 0, w: 32, h: 32 });
+    } // Вибираємо анімаційний кадр за віком кулі.
+    else {
+      ctx.beginPath();
+      ctx.arc(state.x, state.y, this.radius, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffe66d';
+      ctx.fill();
+    } // Малюємо запасне коло без спрайта.
+  } // Завершуємо малювання кулі.
+} // Завершуємо клас Bullet.
+
+// Астероїд рухається і відбивається від країв замість загортання.
 export class Asteroid extends Entity {
-    constructor(x, y, radius) {
-        super(x, y, radius, 'asteroid');
-        this.vel = new Vector2((Math.random() - 0.5) * 100, (Math.random() - 0.5) * 100); // Летить випадково
-    }
-       render(ctx) {
-        const img = sprites.asteroid;
+  // Створюємо перешкоду з заданим розміром.
+  constructor(x, y, radius = 18) {
+    super(x, y, radius, 'asteroid'); // Передаємо базі положення, радіус і тип.
+    this.vel = new Vector2((Math.random() - 0.5) * 100, (Math.random() - 0.5) * 100); // Задаємо повільний випадковий дрейф.
+  } // Завершуємо створення астероїда.
 
-        if (img) {
-            // Діаметр спрайта трохи більший за коло зіткнення (радіус * 2.4).
-            const size = this.radius * 2.4;
-            drawSprite(ctx, img, this.pos.x, this.pos.y, size, size);
-        } else {
-            // Запасний варіант: сіре коло.
-            ctx.beginPath(); ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
-            ctx.strokeStyle = '#aaa'; ctx.lineWidth = 2; ctx.stroke();
-        }
-    }
-}
+  // Пересуваємо астероїд і відбиваємо його від стін.
+  update(dt, width, height) {
+    super.update(dt); // Спершу застосовуємо швидкість за час dt.
+    const bounce = bounceAtBounds(this.pos, this.vel, width, height, this.radius); // Повертаємо відбитий стан у межі.
+    this.pos = new Vector2(bounce.position.x, bounce.position.y); // Зберігаємо скориговану позицію.
+    this.vel = new Vector2(bounce.velocity.x, bounce.velocity.y); // Зберігаємо напрямок після удару.
+  } // Завершуємо оновлення астероїда.
 
-// Клас частинки вибуху
+  // Малюємо повний кадр листа астероїдів.
+  render(ctx, alpha = 1, width = 0, height = 0) {
+    const state = this.renderState(alpha, width, height); // Отримуємо інтерпольовану позицію.
+    const image = sprites.asteroid; // Беремо завантажений лист астероїда.
+    if (image)
+      drawSprite(ctx, image, state.x, state.y, this.radius * 2.4, this.radius * 2.4, state.angle, {
+        x: 0,
+        y: 0,
+        w: image.width,
+        h: image.height,
+      }); // Вирізаємо джерельний прямокутник зі спрайта.
+    else {
+      ctx.beginPath();
+      ctx.arc(state.x, state.y, this.radius, 0, Math.PI * 2);
+      ctx.strokeStyle = '#aaa';
+      ctx.stroke();
+    } // Малюємо контур як резервний варіант.
+  } // Завершуємо малювання астероїда.
+} // Завершуємо клас Asteroid.
+
+// Частинка — короткоживуча сутність усередині вибуху.
 export class Particle extends Entity {
-    constructor(x, y) {
-        super(x, y, 1, 'particle');
-        this.vel = new Vector2((Math.random() - 0.5) * 200, (Math.random() - 0.5) * 200); // Розлітаються в різні боки
-        this.ttl = 0.5 + Math.random() * 0.5; // Живуть дуже короткий час
-    }
-    update(dt, cw, ch) {
-        this.ttl -= dt;
-        if (this.ttl <= 0) this.isDead = true;
-        super.update(dt, cw, ch);
-    }
-    render(ctx) {
-        ctx.fillStyle = `rgba(255, 100, 0, ${this.ttl})`; // Прозорість падає з часом (згасання)
-        ctx.fillRect(this.pos.x, this.pos.y, 3, 3);
-    }
-}
+  // Створюємо частинку з випадковим напрямком.
+  constructor(x, y) {
+    super(x, y, 1, 'particle'); // Частинка майже не впливає на зіткнення.
+    this.vel = new Vector2((Math.random() - 0.5) * 200, (Math.random() - 0.5) * 200); // Розкидаємо її в усі боки.
+    this.ttl = 0.35 + Math.random() * 0.45; // Даємо частинці короткий випадковий час життя.
+  } // Завершуємо створення частинки.
 
-// Фабрична функція для створення аптечки з використанням композиції withPickup
+  // Зменшуємо життя частинки й рухаємо її.
+  update(dt) {
+    this.ttl -= dt; // Віднімаємо фіксований крок від часу життя.
+    if (this.ttl <= 0) this.isDead = true; // Позначаємо зниклу частинку для sweep.
+    super.update(dt); // Пересуваємо частинку базовою фізикою.
+  } // Завершуємо оновлення частинки.
+
+  // Малюємо одну маленьку частинку.
+  render(ctx, alpha = 1, width = 0, height = 0) {
+    const state = this.renderState(alpha, width, height); // Отримуємо інтерпольовану позицію.
+    ctx.globalAlpha = Math.max(0, this.ttl); // Робимо частинку прозорішою перед зникненням.
+    ctx.fillStyle = '#ff8c42'; // Задаємо колір полум'я.
+    ctx.fillRect(state.x, state.y, 3, 3); // Малюємо маленький квадрат.
+    ctx.globalAlpha = 1; // Повертаємо прозорість для наступних об'єктів.
+  } // Завершуємо малювання частинки.
+} // Завершуємо клас Particle.
+
+// Вибух є окремою сутністю та містить багато короткоживучих частинок.
+export class Explosion extends Entity {
+  // Створюємо групу частинок у точці зіткнення.
+  constructor(x, y, count = 15) {
+    super(x, y, 0, 'explosion'); // Вибух сам не має радіуса зіткнення.
+    this.particles = Array.from({ length: count }, () => new Particle(x, y)); // Створюємо дочірні частинки.
+  } // Завершуємо створення вибуху.
+
+  // Оновлюємо всі частинки й прибираємо вибух, коли вони скінчились.
+  update(dt, _width, _height) {
+    for (const particle of this.particles) {
+      particle.capturePrevious();
+      particle.update(dt);
+    } // Кожна частинка має власний рух.
+    this.particles = this.particles.filter((particle) => !particle.isDead); // Зберігаємо лише частинки, що ще живі.
+    if (this.particles.length === 0) this.isDead = true; // Видаляємо групу після останньої частинки.
+  } // Завершуємо оновлення вибуху.
+
+  // Малюємо кожну живу частинку групи.
+  render(ctx, alpha = 1, width = 0, height = 0) {
+    for (const particle of this.particles) particle.render(ctx, alpha, width, height); // Передаємо інтерполяцію кожній частинці.
+  } // Завершуємо малювання вибуху.
+} // Завершуємо клас Explosion.
+
+// Pickup має позицію та колізію, але поведінку отримує через компонент.
+export class Pickup extends Entity {
+  // Створюємо нерухоме місце з ефектом для корабля.
+  constructor(x, y, effect = (ship) => ship.heal()) {
+    super(x, y, 8, 'pickup'); // Pickup має власний радіус для окремої системи зіткнень.
+    this.vel = new Vector2(); // Предмет залишається на місці.
+    withPickup(this, effect); // Композиція додає дію без наслідування від Ship.
+  } // Завершуємо створення предмета.
+
+  // Малюємо предмет на координатах після інтерполяції.
+  render(ctx, alpha = 1, width = 0, height = 0) {
+    const state = this.renderState(alpha, width, height); // Отримуємо згладжену позицію.
+    ctx.fillStyle = '#4ade80'; // Задаємо зелений колір лікувального бонусу.
+    ctx.fillRect(state.x - 5, state.y - 5, 10, 10); // Малюємо квадрат, який легко побачити.
+  } // Завершуємо малювання pickup.
+} // Завершуємо клас Pickup.
+
+// Зберігаємо стару фабричну назву, щоб наявні імпорти не зламалися.
 export function createHealthPickup(x, y) {
-    const e = new Entity(x, y, 8, 'pickup');
-    e.render = (ctx) => {
-        ctx.fillStyle = '#0f0';
-        ctx.fillRect(e.pos.x - 4, e.pos.y - 4, 8, 8); // Малюємо зелений квадрат
-    };
-    return withPickup(e, (ship) => {
-        ship.heal();       // Додаємо кораблю здоров'я
-        e.isDead = true;   // Видаляємо аптечку після підбору
-    });
-}
+  return new Pickup(x, y);
+} // Фабрика повертає аптечку.

@@ -1,270 +1,260 @@
-import { createInput } from './input.js';
-import { createLoop } from './loop.js';
-import { World } from './world.js';
-import { Ship, Asteroid } from './entities.js';
-import { withHoming } from './components.js'; 
-import { loadJson, loadAll, loadAllSequential } from './utils/loader.js';
-import { initAudio } from './utils/audio.js';
-import { sprites } from './sprites.js';
-import { Lobby } from './lobby.js';
-import { createLobbyView } from './ui/lobby.js';
-import { createHud } from './ui/hud.js';
-import { showError } from './ui/errorScreen.js';
-import { startSession } from "./net/session.js";
+// Імпортуємо замикання клавіатури для керування без глобального стану.
+import { createInput } from './input.js'; // Повертає читальні методи для клавіш.
+import { createLoop } from './loop.js'; // Відокремлює частоту симуляції від частоти екрана.
+import { World } from './world.js'; // Керує сутностями та зіткненнями.
+import { Ship, Asteroid } from './entities.js'; // Модель корабля й перешкод не залежить від DOM.
+import { withHoming } from './components.js'; // Додає homing поведінкою, а не наслідуванням.
+import { loadJson, loadAll } from './utils/loader.js'; // Завантажує manifest ігрових ресурсів.
+import { createAudioEngine } from './utils/audio.js'; // Створює звук після жесту гравця.
+import { sprites } from './sprites.js'; // Зберігає завантажені спрайти.
+import { Lobby } from './lobby.js'; // Керує кімнатами й мережевим опитуванням.
+import { createLobbyView } from './ui/lobby.js'; // Окремо малює DOM лобі.
+import { createHud } from './ui/hud.js'; // Відображає ім'я, життя, рахунок і метрики.
+import { showError } from './ui/errorScreen.js'; // Показує помилку й кнопку повтору.
+import { startSession } from './net/session.js'; // Підключає до кімнати WebSocket-клієнта.
 
-const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
-const hud = document.getElementById('hud');
+// Знаходимо полотно та контекст малювання один раз під час старту модуля.
+const canvas = document.getElementById('gameCanvas'); // Canvas показує арену.
+const ctx = canvas.getContext('2d'); // Контекст 2D надає команди малювання.
+const hudElement = document.getElementById('hud'); // Контейнер статистики та рахунку.
+const input = createInput(window); // Замикання слухає клавіатуру в браузерному вікні.
+const audio = createAudioEngine(); // Контекст звуку поки що не створюється.
+let width = 0; // Ширина полотна в CSS-пікселях.
+let height = 0; // Висота полотна в CSS-пікселях.
+let world = null; // World буде створений після вимірювання canvas.
+let ship = null; // Посилання на поточний корабель гравця.
+let lobby = null; // Lobby живе, поки гравець перебуває на екрані кімнат.
+let lobbyView = null; // DOM-подання лобі має окремі команди show та hide.
+let session = null; // WebSocket-сесія відкривається після вибору кімнати.
+let playing = false; // Прапорець вмикає симуляцію після натискання Join.
+let loadController = null; // Контролер дозволяє скасувати поточне завантаження.
+let respawnTime = 0; // Таймер відродження корабля вимірюється в секундах.
+let asteroidTimer = 0; // Таймер періодичного створення перешкод.
+let defaultArena = { asteroidCount: 5 }; // Статичний arena.json задає значення за замовчуванням.
+const hud = createHud(hudElement); // Підписує HUD на події рахунку, життя й звуку.
 
-let canvasWidth, canvasHeight;
+// Підганяємо backing store canvas під CSS-розмір і масштаб пристрою.
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1; // На звичайному екрані DPR дорівнює 1.
+  width = window.innerWidth; // Читаємо ширину області браузера.
+  height = window.innerHeight; // Читаємо висоту області браузера.
+  canvas.width = Math.round(width * dpr); // Збільшуємо bitmap для чіткого рендеру на Retina.
+  canvas.height = Math.round(height * dpr); // Збільшуємо bitmap по вертикалі.
+  canvas.style.width = width + 'px'; // Зберігаємо CSS-розмір у логічних пікселях.
+  canvas.style.height = height + 'px'; // Зберігаємо CSS-висоту.
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // Встановлюємо масштаб, не накопичуючи його після resize.
+  if (world) {
+    world.width = width;
+    world.height = height;
+  } // Оновлюємо межі арени після зміни вікна.
+} // Завершуємо підлаштування canvas.
 
-function resize() {
-    const dpr = window.devicePixelRatio || 1;
-    canvasWidth = window.innerWidth;
-    canvasHeight = window.innerHeight;
-    canvas.width = canvasWidth * dpr;
-    canvas.height = canvasHeight * dpr;
-    canvas.style.width = `${canvasWidth}px`;
-    canvas.style.height = `${canvasHeight}px`;
-    ctx.scale(dpr, dpr);
-}
+window.addEventListener('resize', resizeCanvas); // Повторно налаштовуємо bitmap при зміні розміру вікна.
+resizeCanvas(); // Налаштовуємо canvas до створення гри.
+world = new World(width, height); // Створюємо світ після того, як відомі межі.
+ship = new Ship(width / 2, height / 2); // Ставимо перший корабель у центр арени.
+world.spawn(ship); // Додаємо гравця до entity store.
 
-window.addEventListener('resize', resize);
-resize();
+// Шукаємо безпечну точку для респауну, подалі від астероїдів.
+function findSafeSpawn() {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    // Обмежуємо кількість випадкових перевірок.
+    const point = { x: Math.random() * width, y: Math.random() * height }; // Випадково обираємо кандидата.
+    const safe = [...world.ofKind('asteroid')].every((asteroid) => asteroid.pos.dist(point) > asteroid.radius + 80); // Відкидаємо точки біля перешкод.
+    if (safe) return point; // Повертаємо першу безпечну позицію.
+  } // Завершуємо обмежений пошук.
+  return { x: width / 2, y: height / 2 }; // У переповненій арені використовуємо центр як запасний варіант.
+} // Завершуємо пошук точки.
 
-const input = createInput();
-const world = new World(canvasWidth, canvasHeight);
-let ship = new Ship(canvasWidth / 2, canvasHeight / 2);
-world.spawn(ship);
+// Оновлюємо стан симуляції одним кроком у 1/60 секунди.
+function simulate(dt) {
+  if (!playing) return; // Не рухаємо корабель до вибору кімнати або після виходу.
+  const commands = {
+    left: input.isDown('ArrowLeft'),
+    right: input.isDown('ArrowRight'),
+    thrust: input.isDown('ArrowUp'),
+    firePressed: input.justPressed('Space'),
+  }; // Зчитуємо клавіші один раз за крок.
+  world.step(dt, commands); // Передаємо чистий стан вводу у світ.
+  input.clearJustPressed(); // Одноразові клавіші не повторюються в наступному кроці.
+  if (ship.isDead) {
+    // Починаємо відлік лише після першої смерті.
+    if (respawnTime === 0) respawnTime = 2; // Вимога лабораторної задає дві секунди до респауну.
+    respawnTime -= dt; // Відраховуємо фіксований час симуляції.
+    if (respawnTime <= 0) {
+      const point = findSafeSpawn();
+      ship = new Ship(point.x, point.y);
+      world.spawn(ship);
+      respawnTime = 0;
+    } // Створюємо корабель у безпечному місці.
+  } // Завершуємо контроль респауну.
+  asteroidTimer += dt; // Накопичуємо час до наступної перешкоди.
+  if (asteroidTimer >= 2) {
+    const asteroid = new Asteroid(Math.random() * width, 0, 16);
+    if (Math.random() < 0.2) withHoming(asteroid, ship, 20);
+    world.spawn(asteroid);
+    asteroidTimer = 0;
+  } // Додаємо звичайний або самонавідний астероїд.
+} // Завершуємо крок симуляції.
 
-let playing = false;
+// Малюємо інтерпольований стан світу, щоб корабель був плавним і на 120 Hz.
+function render(alpha) {
+  world.render(ctx, alpha); // World використовує alpha між попереднім і поточним станом.
+} // Завершуємо кадр.
 
-window.addEventListener('keydown', (e) => {
-    // Не стріляємо пробілом, коли пишемо повідомлення в чаті
-    if (document.activeElement && (document.activeElement.id === 'chatInput' || document.activeElement.tagName === 'INPUT')) {
-        return;
-    }
+const loop = createLoop({
+  step: 1 / 60,
+  simulate,
+  render,
+  onStats: (stats) =>
+    hud.setPerf(
+      'Кроки/с: ' +
+        stats.stepsPerSecond +
+        ' | Кадри/с: ' +
+        stats.framesPerSecond +
+        ' | Кадр: ' +
+        stats.frameTimeMs.toFixed(1) +
+        ' мс',
+    ),
+}); // Під'єднуємо фіксований цикл і статистику до HUD.
 
-    if (e.code === 'Space' && playing) {
-        ship.fire(world);
-    }
-});
+// Додаємо повідомлення чату без вставки довільного HTML.
+function addChatMessage(sender, message) {
+  const list = document.getElementById('chatMessages'); // Знаходимо список повідомлень.
+  const row = document.createElement('p'); // Створюємо безпечний текстовий рядок.
+  row.textContent = sender + ': ' + message; // textContent не інтерпретує текст як HTML.
+  list.append(row); // Додаємо повідомлення в кінець чату.
+  list.scrollTop = list.scrollHeight; // Прокручуємо список до нового рядка.
+} // Завершуємо додавання повідомлення.
 
-let respawnTimer = 0;
+// Надсилаємо текст чату через API активної кімнатної сесії.
+document.getElementById('chatForm').addEventListener('submit', (event) => {
+  event.preventDefault(); // Не перезавантажуємо сторінку через HTML-форму.
+  const field = document.getElementById('chatInput'); // Беремо поле введення повідомлення.
+  const text = field.value.trim(); // Відкидаємо порожній текст і пробіли по краях.
+  if (!text || !session) return; // Не надсилаємо порожні рядки або повідомлення поза кімнатою.
+  session.sendChat(text); // Клієнтська сесія поставить повідомлення в чергу сокета.
+  field.value = ''; // Очищаємо поле після надсилання.
+}); // Завершуємо обробник форми чату.
 
-function update(dt) {
-    world.step(dt, input.getState());
+// Показуємо в HUD список гравців, які вже зайшли в кімнату.
+function showRoster(players = []) {
+  const roster = document.getElementById('roomRoster'); // Знаходимо місце для учасників кімнати.
+  if (roster) roster.textContent = 'У кімнаті: ' + players.map((player) => player.name).join(', '); // Відображаємо лише перевірені текстові імена.
+} // Завершуємо оновлення списку.
 
-    if (ship.isDead) {
-        if (respawnTimer === 0) {
-            respawnTimer = 2;
-        }
-        
-        respawnTimer -= dt;
-        
-        if (respawnTimer <= 0) {
-            ship = new Ship(canvasWidth / 2, canvasHeight / 2);
-            world.spawn(ship);
-            respawnTimer = 0;
-        }
-    }
-    
-    if (Math.random() < 0.02) {
-        const asteroid = new Asteroid(Math.random() * canvasWidth, 0, 15);
-        
-        if (Math.random() < 0.2 && !ship.isDead) {
-            world.spawn(withHoming(asteroid, ship, 50));
-        } else {
-            world.spawn(asteroid);
-        }
-    }
-}
+// Стартуємо локальний матч після натискання Join у лобі.
+function joinGame({ room, name, arena }) {
+  playing = true; // Дозволяємо симуляції й рендеру початися.
+  hud.setName(name); // Показуємо ім'я власного корабля.
+  lobbyView.hide(); // Приховуємо список кімнат і скасовуємо його запит.
+  session?.leave(); // Закриваємо попередню сесію, якщо вона існувала.
+  session = startSession({
+    roomId: room.id,
+    name,
+    onRoster: (message) => showRoster(message.players),
+    onChat: (message) => addChatMessage(message.sender, message.text),
+    onStatus: (status, data) => {
+      if (status === 'joined' && data?.players) showRoster(data.players);
+    },
+  }); // Приєднуємося до сервера та слухаємо кімнатні події.
+  const count = Number(arena?.asteroidCount ?? defaultArena.asteroidCount) || 5; // Поєднуємо кімнату з arena.json або початковою кількістю.
+  for (let i = 0; i < count; i += 1) world.spawn(new Asteroid(Math.random() * width, Math.random() * height, 16)); // Створюємо перешкоди матчу.
+  document.getElementById('chatBox').hidden = false; // Відкриваємо чат після входу.
+  document.getElementById('leaveGameBtn').hidden = false; // Показуємо вихід із кімнати.
+  loop.start(); // Починаємо rAF лише після вибору кімнати.
+} // Завершуємо запуск матчу.
 
-function draw(alpha) {
-    world.render(ctx);
-}
-
-const hudView = createHud(hud);
-
-const loop = createLoop(update, draw, {
-    set innerText(text) {
-        hudView.setPerf(text);
-    }
-});
-
-const audioCtx = new AudioContext();
-let assets = null;
-
-function drawLoading(done, total, label) {
-    ctx.save();
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-    const barW = Math.min(400, canvasWidth * 0.6);
-    const barH = 24;
-    const x = (canvasWidth - barW) / 2;
-    const y = canvasHeight / 2;
-
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x, y, barW, barH);
-
-    ctx.fillStyle = '#0f0';
-    ctx.fillRect(x, y, barW * (total ? done / total : 0), barH);
-
-    ctx.fillStyle = '#fff';
-    ctx.font = '16px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(`Завантаження ${done}/${total}  ${label}`, canvasWidth / 2, y - 16);
-
-    ctx.restore();
-}
-
-function describeError(error) {
-    if (error.name === 'AbortError') return 'Завантаження скасовано.';
-    if (error.name === 'TimeoutError') return 'Сервер не відповів вчасно (таймаут).';
-    if (error.name === 'HttpError') return `Файл не знайдено або помилка сервера (HTTP ${error.status}).`;
-    if (error.name === 'SyntaxError') return 'Файл пошкоджений (некоректний JSON).';
-    return "Не вдалося завантажити ресурси (перевірте з'єднання).";
-}
-
-function applyFailure(manifest, mode) {
-    const m = structuredClone(manifest);
-    if (mode === '404') m.images.hero = 'https://httpbin.org/status/404';
-    if (mode === 'timeout') m.images.asteroid = 'https://httpbin.org/delay/10';
-    if (mode === 'json') m.json.arena = '/assets/broken.json';
-    return m;
-}
-
-function addChatMessageToBox(sender, text) {
-    const chatMessages = document.getElementById('chatMessages');
-    if (!chatMessages) return;
-
-    const div = document.createElement('div');
-    div.style.marginBottom = '4px';
-    div.innerHTML = `<b style="color: #66fcf1;">${sender}:</b> ${text}`;
-    chatMessages.appendChild(div);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
+// Завантажуємо активи й після цього готуємо лобі.
 async function boot() {
-    const params = new URLSearchParams(location.search);
-    const failMode = params.get('fail');
-    const delay = Number(params.get('delay')) || (failMode === 'abort' ? 800 : 0);
+  loadController = new AbortController(); // Створюємо окреме скасування для цього завантаження.
+  const signal = loadController.signal; // Передаємо один сигнал усім мережевим запитам.
+  const params = new URLSearchParams(location.search); // Читаємо необов'язкові режими демонстрації з URL.
+  const failure = params.get('fail'); // Режим fail дає відтворити сценарії з README.
+  const loadingControls = document.getElementById('loadingControls'); // Знаходимо статус і кнопку скасування.
+  loadingControls.hidden = false; // Показуємо керування завантаженням.
+  try {
+    // Перехоплюємо мережеві помилки й показуємо зрозумілий Retry.
+    drawLoading(0, 1, 'manifest'); // Відображаємо перший етап прогресу.
+    const manifest = await loadJson('/assets/manifest.json', signal); // Завантажуємо єдиний опис усіх файлів.
+    if (failure === '404') manifest.images.hero = '/assets/not-found.png'; // Підміняємо спрайт на відсутній для досліду 404.
+    if (failure === 'timeout') manifest.json.arena = '/api/demo/slow?delay=3000'; // Підміняємо JSON ресурс локальним повільним маршрутом.
+    if (failure === 'json') manifest.json.arena = '/assets/broken-json.txt'; // Підміняємо JSON ресурс пошкодженим текстом.
+    const timeoutMs = failure === 'timeout' ? 250 : 5000; // Робимо контрольований короткий timeout лише в демонстрації.
+    if (failure === 'abort') setTimeout(() => loadController?.abort(), 150); // Автоматично перериваємо режим демонстрації abort посеред завантаження.
+    const loaded = await loadAll(manifest, {
+      audioCtx: audio.context,
+      signal,
+      timeoutMs,
+      debugDelayMs: failure === 'abort' ? 1000 : 0,
+      onProgress: (done, total, file) => drawLoading(done, total, file),
+    }); // Чекаємо всі ресурси й показуємо прогрес для кожного.
+    defaultArena = loaded.json.arena ?? defaultArena; // Зберігаємо arena.json як початкові налаштування гри.
+    Object.assign(sprites, loaded.images); // Передаємо зображення в модуль рендеру.
+    audio.setBuffers(loaded.sounds); // Зберігаємо декодовані аудіобуфери.
+    loadingControls.hidden = true; // Ховаємо індикатор після успішного завантаження.
+    lobby = new Lobby(); // Створюємо модель лобі без DOM-залежностей.
+    lobbyView = createLobbyView(lobby, document.getElementById('lobby')); // Будуємо DOM лобі в окремому модулі.
+    lobby.addEventListener('joined', (event) => joinGame(event.detail)); // Зв'язуємо вибір кімнати зі стартом гри.
+    lobbyView.show(); // Показуємо лобі й запускаємо перший HTTP-запит.
+  } catch (error) {
+    // Всі помилки активів ведуть на екран повтору.
+    loadController.abort(); // Скасовуємо всі паралельні запити після першої помилки.
+    loadingControls.hidden = true; // Прибираємо кнопку скасування після завершення спроби.
+    showError(document.getElementById('errorScreen'), describeError(error), () => boot()); // Показуємо повідомлення й запускаємо нову спробу після кліку.
+  } // Завершуємо обробку помилок завантаження.
+} // Завершуємо boot.
 
-    const controller = new AbortController();
+// Малюємо справжній прогрес завантаження на полотні.
+function drawLoading(done, total, label) {
+  ctx.clearRect(0, 0, width, height); // Стираємо попередній стан екрана.
+  ctx.fillStyle = '#0b0c10'; // Встановлюємо фон гри.
+  ctx.fillRect(0, 0, width, height); // Заповнюємо всю площу фоном.
+  const barWidth = Math.min(420, width * 0.7); // Не даємо смузі вийти за межі малого екрана.
+  const x = (width - barWidth) / 2; // Центруємо смугу по горизонталі.
+  const y = height / 2; // Розміщуємо смугу посередині.
+  ctx.strokeStyle = '#66fcf1'; // Задаємо колір контуру смуги.
+  ctx.strokeRect(x, y, barWidth, 22); // Малюємо рамку прогресу.
+  ctx.fillStyle = '#4ade80'; // Задаємо колір заповнення.
+  ctx.fillRect(x, y, barWidth * (total ? done / total : 0), 22); // Заповнюємо частину відповідно до кількості файлів.
+  ctx.fillStyle = '#fff'; // Задаємо колір напису.
+  ctx.font = '16px monospace'; // Встановлюємо читабельний шрифт статусу.
+  ctx.textAlign = 'center'; // Центруємо текст над смугою.
+  ctx.fillText('Завантаження ' + done + '/' + total + ' — ' + label, width / 2, y - 14); // Показуємо назву останнього файлу.
+} // Завершуємо малювання прогресу.
 
-    try {
-        drawLoading(0, 1, 'manifest');
-        let manifest = await loadJson('/assets/manifest.json', controller.signal);
-        manifest = applyFailure(manifest, failMode);
+// Перетворюємо тип помилки на повідомлення без технічного стеку.
+function describeError(error) {
+  if (error.name === 'AbortError') return 'Завантаження скасовано. Натисни «Повторити», щоб почати знову.'; // Пояснюємо ручний або тестовий abort.
+  if (error.name === 'TimeoutError') return 'Сервер не відповів вчасно. Перевір з’єднання та повтори.'; // Пояснюємо таймаут мережі.
+  if (error.name === 'HttpError')
+    return 'Не вдалося завантажити файл (HTTP ' + error.status + '). Перевір адресу та повтори.'; // Пояснюємо 4xx/5xx відповідь.
+  if (error.name === 'SyntaxError') return 'Файл JSON пошкоджений. Виправ файл або повтори завантаження.'; // Пояснюємо синтаксично хибний JSON.
+  return 'Не вдалося завантажити ресурси. Перевір з’єднання та повтори.'; // Даємо загальне повідомлення для мережевих помилок.
+} // Завершуємо перетворення помилки.
 
-        if (failMode === 'abort') setTimeout(() => controller.abort(), 300);
+// Розблоковуємо звук синхронно з першим кліком і лише потім починаємо мережу.
+document.getElementById('startButton').addEventListener(
+  'click',
+  async () => {
+    await audio.unlock(); // Створюємо AudioContext у межах користувацького жесту.
+    document.getElementById('startScreen').hidden = true; // Ховаємо стартовий екран після дозволу браузера.
+    boot(); // Починаємо асинхронне завантаження після розблокування звуку.
+  },
+  { once: true },
+); // Ігровий цикл може стартувати лише один раз.
 
-        const options = {
-            audioCtx,
-            signal: controller.signal,
-            debugDelayMs: delay,
-            timeoutMs: 2000,
-            onProgress: (done, total, name) => drawLoading(done, total, name),
-        };
+// Кнопка скасування перериває всі fetch-запити й повторні спроби активів.
+document.getElementById('cancelLoading').addEventListener('click', () => loadController?.abort()); // Сигнал зупиняє поточний pipeline.
 
-        if (params.has('measure')) {
-            const t1 = performance.now();
-            await loadAllSequential(manifest, options);
-            const sequentialMs = performance.now() - t1;
-
-            const t2 = performance.now();
-            await loadAll(manifest, options);
-            const concurrentMs = performance.now() - t2;
-
-            console.log(`Послідовно: ${sequentialMs.toFixed(0)} мс`);
-            console.log(`Одночасно: ${concurrentMs.toFixed(0)} мс`);
-        }
-
-        assets = await loadAll(manifest, options);
-        console.log('Ассети готові:', assets);
-
-        initAudio(audioCtx, assets.sounds);
-        Object.assign(sprites, assets.images);
-
-        ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-        const lobby = new Lobby();
-        const lobbyView = createLobbyView(lobby, document.getElementById('lobby'));
-
-       lobby.addEventListener('joined', (e) => {
-            const { room, name, arena } = e.detail;
-
-            // 1. ПРИХОВУЄМО ЕКРАН ЛОБІ, щоб відкрити ігрове поле (Canvas)
-            const lobbyEl = document.getElementById('lobby');
-            if (lobbyEl) lobbyEl.style.display = 'none';
-            if (typeof lobbyView.hide === 'function') {
-                try { lobbyView.hide(); } catch (err) {}
-            }
-
-            // 2. Встановлюємо ім'я в HUD
-            hudView.setName(name);
-
-            // 3. Відкриваємо чат для гри
-            const chatBox = document.getElementById('chatBox');
-            if (chatBox) chatBox.style.display = 'block';
-
-            // 4. Підключаємо мережеву сесію
-            window.session = startSession({
-                roomId: room ? room.id : 'Кімната 1',
-                name,
-                onRoaster: (m) => console.log('roster', m),
-                onChat: (m) => {
-                    console.log('chat', m);
-                    if (m && m.text) {
-                        addChatMessageToBox(m.sender || m.user || 'Гравець', m.text);
-                    }
-                },
-                onStatus: (s, c) => console.log('status', s, c),
-            });
-
-            // 5. Запускаємо аудіо та ігровий цикл
-            audioCtx.resume();
-            
-            const count = (arena && arena.asteroidCount) ? arena.asteroidCount : 5;
-            for (let i = 0; i < count; i++) {
-                world.spawn(new Asteroid(Math.random() * canvasWidth, Math.random() * canvasHeight * 0.5, 15));
-            }
-            
-            playing = true;
-            loop.start();
-        });
-
-        const chatForm = document.getElementById('chatForm');
-        const chatInput = document.getElementById('chatInput');
-
-        if (chatForm && chatInput) {
-            chatForm.addEventListener('submit', (e) => {
-                e.preventDefault();
-                const text = chatInput.value.trim();
-                if (text && window.session) {
-                    if (typeof window.session.sendChat === 'function') {
-                        window.session.sendChat(text);
-                    } else if (typeof window.session.send === 'function') {
-                        window.session.send(JSON.stringify({ type: 'chat', text }));
-                    }
-                    addChatMessageToBox('Ви', text);
-                    chatInput.value = '';
-                }
-            });
-        }
-
-        lobbyView.show();
-    } catch (error) {
-        controller.abort();
-        ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-        console.error('Збій завантаження:', error);
-
-        showError(document.getElementById('errorScreen'), describeError(error), () => {
-            history.replaceState(null, '', location.pathname);
-            boot();
-        });
-    }
-}
-
-boot();
+// Кнопка виходу закриває сокет і повертає гравця в список кімнат.
+document.getElementById('leaveGameBtn').addEventListener('click', () => {
+  loop.stop(); // Зупиняємо рендер гри.
+  playing = false; // Вимикаємо ігровий стан.
+  session?.leave(); // Закриваємо WebSocket і звільняємо кімнату на сервері.
+  session = null; // Прибираємо застаріле посилання на сесію.
+  document.getElementById('chatBox').hidden = true; // Ховаємо чат.
+  document.getElementById('leaveGameBtn').hidden = true; // Ховаємо кнопку виходу.
+  document.getElementById('lobby').hidden = false; // Повертаємо лобі.
+  lobbyView.show(); // Оновлюємо список доступних кімнат.
+}); // Завершуємо вихід із матчу.

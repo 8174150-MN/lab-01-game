@@ -1,68 +1,70 @@
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
-import path from "node:path";
-import { pipeline } from "node:stream/promises";
-import { config } from "./config.js";
+// Статичний handler обмежує запити файлами всередині зібраного клієнта.
+import { createReadStream } from 'node:fs'; // Читаємо великі файли потоком, не завантажуючи все в пам'ять.
+import { stat } from 'node:fs/promises'; // Перевіряємо наявність цільового файла та його тип.
+import path from 'node:path'; // Безпечно розбираємо шляхи на Windows і POSIX.
+import { pipeline } from 'node:stream/promises'; // Передаємо помилки й дотримуємося backpressure відповіді.
+import { config } from './config.js'; // Беремо налаштовану папку Vite-збірки.
 
-// Словник типів файлів (MIME types)
-const MIME_TYPES = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".ico": "image/x-icon",
-  ".woff2": "font/woff2",
-};
+const mimeTypes = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.woff2': 'font/woff2',
+}; // Зіставляємо розширення файлів із MIME-типом браузера.
 
-function sendText(res, status, text) {
-  res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end(text);
-}
+function sendText(response, status, text) {
+  response.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' }); // Позначаємо тіло помилки як звичайний текст.
+  response.end(text); // Завершуємо відповідь без відкриття файлового потоку.
+} // Завершуємо створення текстової відповіді.
 
-// Модуль віддачі статичних файлів із захистом від Path Traversal
-export async function serveStatic(req, res, pathname) {
-  let decoded;
+export async function serveStatic(request, response, pathname) {
+  let decoded; // Оголошуємо змінну адреси поза try, щоб використати її нижче.
   try {
     decoded = decodeURIComponent(pathname);
   } catch {
-    return sendText(res, 400, "Bad request");
-  }
-
-  // Захист: блокуємо спроби вийти з робочої директорії за допомогою ".." або "\0"
-  if (decoded.includes("\0") || decoded.split(/[\\/]/).includes("..")) {
-    return sendText(res, 400, "Bad request");
-  }
-
-  // Якщо запит на "/", віддаємо index.html
-  const relative = decoded === "/" ? "index.html" : decoded.slice(1);
-  const filePath = path.join(config.DIST_DIR, relative);
-
-  // Перевірка: файл має перебувати суворо всередині папки dist
-  if (!filePath.startsWith(config.DIST_DIR + path.sep)) {
-    return sendText(res, 403, "Forbidden");
-  }
-
-  let info;
+    sendText(response, 400, 'Bad request');
+    return;
+  } // Відхиляємо некоректне percent-кодування.
+  if (decoded.includes('\0') || decoded.split(/[\\/]/).includes('..')) {
+    sendText(response, 400, 'Bad request');
+    return;
+  } // Відхиляємо сегменти виходу з папки ще до збирання шляху.
+  const requested = decoded === '/' ? 'index.html' : decoded.slice(1); // Для кореня віддаємо головну сторінку клієнта.
+  const filename = path.resolve(config.DIST_DIR, requested); // Обчислюємо ціль відносно папки dist.
+  const relative = path.relative(config.DIST_DIR, filename); // Перевіряємо, чи не вийшов шлях за межі кореня.
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    sendText(response, 403, 'Forbidden');
+    return;
+  } // Забороняємо читати будь-які файли поза client/dist.
+  let fileInfo; // Зберігаємо метадані лише після успішного stat.
   try {
-    info = await stat(filePath);
+    fileInfo = await stat(filename);
   } catch {
-    return sendText(res, 404, "Not found");
-  }
-
-  if (!info.isFile()) {
-    return sendText(res, 404, "Not found");
-  }
-
-  // Встановлюємо відповідний MIME type та розмір
-  const type = MIME_TYPES[path.extname(filePath)] ?? "application/octet-stream";
-  res.writeHead(200, {
-    "Content-Type": type,
-    "Content-Length": info.size,
-  });
-
-  // Передаємо файл через потік pipeline
-  await pipeline(createReadStream(filePath), res);
-}
+    sendText(response, 404, 'Not found');
+    return;
+  } // Повертаємо зрозумілий 404, якщо файла немає.
+  if (!fileInfo.isFile()) {
+    sendText(response, 404, 'Not found');
+    return;
+  } // Не показуємо вміст каталогів як список.
+  const contentType = mimeTypes[path.extname(filename).toLowerCase()] ?? 'application/octet-stream'; // Для невідомого розширення використовуємо безпечний тип.
+  response.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': fileInfo.size,
+    'X-Content-Type-Options': 'nosniff',
+  }); // Встановлюємо заголовки відповіді перед передаванням тіла.
+  if (request.method === 'HEAD') {
+    response.end();
+    return;
+  } // HEAD повертає такі самі заголовки, але без тіла.
+  await pipeline(createReadStream(filename), response); // Передаємо файл частинами з урахуванням backpressure.
+} // Завершуємо віддачу статичного файла.

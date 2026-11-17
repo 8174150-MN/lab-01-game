@@ -1,11 +1,26 @@
 {
   "name": "dogfight",
   "private": true,
-  "workspaces": ["client", "server"],
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "workspaces": [
+    "client",
+    "server"
+  ],
   "scripts": {
-    "dev:server": "npm run dev -w server",
     "dev:client": "npm run dev -w client",
+    "dev:server": "npm run dev -w server",
     "build": "npm run build -w client",
-    "start": "npm run start -w server"
+    "test": "npm run test -w client && npm run test -w server",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "bench:rss": "node server/bench/replay-backpressure.js"
+  },
+  "devDependencies": {
+    "eslint": "^10.15.0",
+    "prettier": "^3.10.1"
   }
 }

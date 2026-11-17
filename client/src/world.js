@@ -1,195 +1,163 @@
-// Імпортуємо клас Particle (маленькі частинки для вибухів) 
-// та функцію createHealthPickup (для створення аптечок) із файлу entities.js
-import { Particle, createHealthPickup } from './entities.js';
-//шина подій світ повідомляє про влучання й вибухи але про звук нічого не знає
-import { emit } from './events.js';
+// World owns entities and coordinates updates, collisions, removal, and drawing.
+import { Explosion, Pickup } from './entities.js'; // Вибух зберігає короткоживучі частинки в одному об'єкті.
+import { findCircleCollisions } from './sim/collision.js'; // Геометрична перевірка ізольована від правил гри.
+import { wrapPosition } from './sim/arena.js'; // Арена окремо задає загортання за межами.
+import { emit } from './events.js'; // HUD і звук отримують факти про ігрові події.
 
-// Створюємо та експортуємо клас World. Це головний диспетчер, 
-// який керує всім, що відбувається на ігровому полі.
 export class World {
+  #entities = new Map(); // Приватна Map зберігає сутності за їхніми ID.
 
-    // Спеціальна функція-конструктор, яка запускається один раз при створенні світу
-    constructor(canvasWidth, canvasHeight) {
-        
-        // Створюємо сховище (Map). Це колекція у вигляді "ключ -> значення". 
-        // У нас ключем буде унікальний номер (id) об'єкта, а значенням — сам об'єкт (Entity). 
-        // Map обрано тому, що в ній дуже швидко шукати, додавати і видаляти елементи.
-        this.entities = new Map(); 
-        
-        // Зберігаємо ширину ігрового екрана, яку передали ззовні
-        this.width = canvasWidth;
-        
-        // Зберігаємо висоту ігрового екрана
-        this.height = canvasHeight;
-        
-        // Початковий рахунок гравця на початку гри дорівнює 0
-        this.score = 0;
-    }
+  // Створюємо арену з розмірами CSS-пікселів.
+  constructor(width, height) {
+    this.width = width; // Ширина визначає горизонтальні межі.
+    this.height = height; // Висота визначає вертикальні межі.
+    this.score = 0; // Рахунок починається з нуля.
+  } // Завершуємо створення світу.
 
-    // Метод для додавання нового об'єкта (корабля, астероїда тощо) у сховище Map
-    spawn(entity) { 
-        // Записуємо в Map новий елемент, де ключ — це id об'єкта, а саме значення — об'єкт (entity)
-        this.entities.set(entity.id, entity); 
-    }
-    
-    // Метод для видалення об'єкта зі сховища за його унікальним номером (id)
-    despawn(id) { 
-        // Видаляємо з Map запис, який відповідає цьому id
-        this.entities.delete(id); 
-    }
+  // Додаємо нову сутність до Map.
+  spawn(entity) {
+    this.#entities.set(entity.id, entity); // ID є ключем і не змінюється протягом життя сутності.
+    return entity; // Повертаємо сутність для зручного ланцюжка викликів.
+  } // Завершуємо spawn.
 
-    // Спеціальний метод-генератор (має зірочку *), який допомагає 
-    // відфільтрувати з усіх об'єктів світу тільки об'єкти певного типу (kind)
-    *ofKind(kind) {
-        // Перебираємо циклом усі значення (об'єкти) у колекції Map
-        for (const entity of this.entities.values()) {
-            
-            // Якщо тип поточного об'єкта збігається з тим, який шукаємо (наприклад, 'asteroid')
-            if (entity.kind === kind) {
-                // Віддаємо цей об'єкт назовні (yield)
-                yield entity;
-            }
-        }
-    }
+  // Позначаємо об'єкт мертвим, щоб sweep прибрав його наприкінці кроку.
+  despawn(id) {
+    const entity = this.#entities.get(id); // Знаходимо сутність за ID.
+    if (entity) entity.isDead = true; // Не змінюємо Map під час обходу сутностей.
+  } // Завершуємо відкладене видалення.
 
-    // Допоміжний метод, який створює ефект вибуху в певній точці (x, y)
-    spawnExplosion(x, y, count) {
-        // Запускаємо цикл стільки разів, скільки частинок (count) нам треба створити
-        for (let i = 0; i < count; i++) {
-            
-            // Створюємо нову частинку вибуху та одразу додаємо її у світ через метод spawn
-            this.spawn(new Particle(x, y));
-        }
-    }
+  // Повертаємо сутність за ID або undefined.
+  get(id) {
+    return this.#entities.get(id);
+  } // Map виконує пошук за ключем.
 
-    // Головний метод симуляції (step), який виконується на кожному кадрі гри: 
-    // рухає об'єкти, рахує зіткнення та прибирає мертві
-    step(dt, input) {
-        
-        // КРОК 1: Оновлюємо стан і позицію абсолютно всіх об'єктів, які є у світі
-        for (const entity of this.entities.values()) {
-            
-            // Якщо цей об'єкт — корабель гравця, йому обов'язково потрібні дані клавіатури (input) для руху
-            if (entity.kind === 'ship') {
-                entity.update(dt, this.width, this.height, input);
-            } 
-            else {
-                // Всі інші об'єкти (астероїди, кулі, частинки) оновлюються самі, без клавіатури
-                entity.update(dt, this.width, this.height);
-            }
-        }
+  // Дозволяємо перебирати всі сутності через for...of.
+  [Symbol.iterator]() {
+    return this.#entities.values();
+  } // Ітератор не створює копію списку.
 
-        // КРОК 2: Збираємо групи однакових об'єктів у звичайні масиви, 
-        // щоб зручно порівнювати їх між собою для перевірки зіткнень
-        const ships = Array.from(this.ofKind('ship'));       // Масив усіх кораблів
-        const bullets = Array.from(this.ofKind('bullet'));   // Масив усіх куль
-        const asteroids = Array.from(this.ofKind('asteroid')); // Масив усіх астероїдів
-        const pickups = Array.from(this.ofKind('pickup'));   // Масив усіх аптечок
+  // Віддаємо генератор для одного виду сутностей.
+  *ofKind(kind) {
+    for (const entity of this.#entities.values()) {
+      // Послідовно читаємо значення Map.
+      if (entity.kind === kind) yield entity; // Повертаємо лише сутності потрібного типу.
+    } // Завершуємо обхід карти.
+  } // Завершуємо генератор виду.
 
-        // ПЕРЕВІРКА А: Чи влучила якась куля в якийсь астероїд?
-        for (const b of bullets) {
-            
-            // Якщо куля вже помічена як мертва, пропускаємо її і йдемо далі
-            if (b.isDead) continue;
-            
-            for (const a of asteroids) {
-                
-                // Якщо астероїд вже мертвий, пропускаємо його
-                if (a.isDead) continue;
-                
-                // Перевірка зіткнення кіл: якщо відстань між центрами кулі та астероїда 
-                // менша за суму їхніх радіусів (b.radius + a.radius) — це влучання!
-                if (b.pos.dist(a.pos) < b.radius + a.radius) {
-                    
-                    b.isDead = true; // Позначаємо кулю як мертву
-                    a.isDead = true; // Позначаємо астероїд як мертвий
-                    
-                    // Створюємо вибух у точці астероїда з 15 частинок
-                    this.spawnExplosion(a.pos.x, a.pos.y, 15);
-                    
-                    // Додаємо гравцю 10 очок до рахунку
-                    this.score += 10;
-                    //повідомляємо шину астероїд вибухнув (звук підхопить audio.js)
-                    //Другий аргумент дані події де саме це сталося
-                    emit('exploded', { x: a.pos.x, y: a.pos.y, score: this.score });
-                    
-                    // З ймовірністю 20% (0.2) на місці астероїда з'являється аптечка
-                    if (Math.random() < 0.2) {
-                        this.spawn(createHealthPickup(a.pos.x, a.pos.y));
-                    }
-                }
-            }
-        }
+  // Створюємо вибух як сутність, що містить багато частинок.
+  spawnExplosion(x, y, count = 15) {
+    return this.spawn(new Explosion(x, y, count)); // Додаємо групу частинок до того самого entity store.
+  } // Завершуємо створення вибуху.
 
-        // ПЕРЕВІРКА Б: Чи врізався корабель в аптечку або в астероїд?
-        for (const s of ships) {
-            
-            // Якщо корабель вже мертвий, пропускаємо перевірку
-            if (s.isDead) continue;
-            
-            // Перевіряємо, чи зіткнувся корабель з якимось бонусом (аптечкою)
-            for (const p of pickups) {
-                
-                // Якщо аптечка жива і відстань між кораблем та аптечкою менша за суму їх радіусів
-                if (!p.isDead && s.pos.dist(p.pos) < s.radius + p.radius) {
-                    
-                    // Якщо до цієї аптечки прикріплена дія підбору (onPickup) — виконуємо її (лікуємо корабель)
-                    if (p.onPickup) {
-                        p.onPickup(s);
-                    }
-                }
-            }
+  // Оновлюємо фізику, обробляємо зіткнення та прибираємо мертвих.
+  step(dt, input = {}) {
+    const active = [...this.#entities.values()]; // Знімок не включає сутності, додані посеред цього кроку.
+    for (const entity of active) {
+      // Кожну сутність оновлюємо рівно один раз за фіксований крок.
+      if (entity.isDead) continue; // Пропускаємо сутності, позначені до початку кроку.
+      entity.capturePrevious(); // Зберігаємо стан для інтерполяції рендеру.
+      if (entity.kind === 'ship')
+        entity.update(dt, this.width, this.height, input); // Корабель отримує стан клавіш.
+      else entity.update(dt, this.width, this.height); // Інші сутності рухаються без клавіатури.
+      if (entity.kind !== 'asteroid' && entity.kind !== 'explosion') {
+        // Астероїди відбиваються, решта ігрових тіл загортаються.
+        const wrapped = wrapPosition(entity.pos, this.width, this.height, entity.radius); // Рахуємо нові координати за межами.
+        entity.pos.x = wrapped.x; // Оновлюємо горизонтальну координату.
+        entity.pos.y = wrapped.y; // Оновлюємо вертикальну координату.
+      } // Завершуємо обробку меж арени.
+      if (entity.kind === 'ship' && input.firePressed) entity.fire(this); // Стрільба викликає метод на кораблі, зберігаючи this.
+    } // Завершуємо цикл оновлення сутностей.
 
-            // Перевіряємо зіткнення корабля з астероїдами
-            for (const a of asteroids) {
-                
-                // Якщо астероїд мертвий, пропускаємо
-                if (a.isDead) continue;
-                
-                // Якщо відстань між кораблем та астероїдом менша за суму їх радіусів — аварія!
-                if (s.pos.dist(a.pos) < s.radius + a.radius) {
-                    
-                    a.isDead = true; // Знищуємо астероїд
-                    
-                    // Створюємо вибух на місці зіткнення з 15 частинок
-                    this.spawnExplosion(a.pos.x, a.pos.y, 15);
-                    
-                    // Застосовуємо шкоду до корабля (віднімаємо 1 життя)
-                    s.takeDamage();
+    const collisions = findCircleCollisions(active, (a, b) => this.#canCollide(a, b)); // Окрема система повертає пари контактів.
+    for (const [a, b] of collisions) this.#resolveCollision(a, b); // World застосовує до пар ігрові правила.
+    this.#sweep(); // Видаляємо всі сутності, позначені мертвими.
+  } // Завершуємо крок світу.
 
-                    // Корабель отримав удар.
-                    emit('hit', { x: s.pos.x, y: s.pos.y, hp: s.hp });
+  // Вирішуємо, які типи сутностей можуть взаємодіяти.
+  #canCollide(a, b) {
+    const kinds = new Set([a.kind, b.kind]); // Нормалізуємо пару, незалежно від порядку Map.
+    if (kinds.has('bullet') && kinds.has('asteroid')) return true; // Кулі знищують астероїди.
+    if (kinds.has('bullet') && kinds.has('ship')) {
+      // Кулі можуть пошкодити інші кораблі.
+      const bullet = a.kind === 'bullet' ? a : b; // Знаходимо кулю в парі.
+      const ship = a.kind === 'ship' ? a : b; // Знаходимо корабель у парі.
+      return bullet.ownerId !== ship.id; // Власна куля не вражає стрільця.
+    } // Завершуємо перевірку кулі й корабля.
+    if (kinds.has('ship') && kinds.has('asteroid')) return true; // Астероїди пошкоджують корабель.
+    if (kinds.has('ship') && kinds.has('pickup')) return true; // Корабель може підібрати бонус.
+    return false; // Решта пар не потребує колізій.
+  } // Завершуємо фільтр пар.
 
-                    // Якщо корабель загинув, створюємо великий вибух і повідомляємо про нього.
-                    if (s.isDead) {
-                        this.spawnExplosion(s.pos.x, s.pos.y, 30);
-                        emit('exploded', { x: s.pos.x, y: s.pos.y, score: this.score});
-                    }
-                }
-            }
-        }
+  // Застосовуємо шкоду, рахунок, pickup і вибухи до знайденої пари.
+  #resolveCollision(a, b) {
+    if (a.isDead || b.isDead) return; // Раніше оброблена пара не може вдруге влучити.
+    const bullet = a.kind === 'bullet' ? a : b.kind === 'bullet' ? b : null; // Знаходимо кулю, якщо вона є.
+    const asteroid = a.kind === 'asteroid' ? a : b.kind === 'asteroid' ? b : null; // Знаходимо астероїд, якщо він є.
+    const ship = a.kind === 'ship' ? a : b.kind === 'ship' ? b : null; // Знаходимо корабель, якщо він є.
+    const pickup = a.kind === 'pickup' ? a : b.kind === 'pickup' ? b : null; // Знаходимо pickup, якщо він є.
 
-        // (SWEEP / ОЧИЩЕННЯ): Проходимо по всьому сховищу Map і остаточно 
-        // видаляємо з пам'яті ті об'єкти, у яких прапорець `isDead` став рівним `true`
-        for (const [id, entity] of this.entities) {
-            if (entity.isDead) {
-                this.despawn(id);
-            }
-        }
-    }
-    
-    // Метод для малювання (рендерирування) всіх об'єктів на екрані монітора
-    render(ctx) {
-        // Повністю очищуємо весь екран від старого кадру, щоб картинка не накладалася одна на одну
-        ctx.clearRect(0, 0, this.width, this.height);
-        
-        // Перебираємо всі об'єкти у світі
-        for (const entity of this.entities.values()) {
-            
-            // Якщо у об'єкта є власний метод малювання (render) — викликаємо його, передаючи пензлик (ctx)
-            if (entity.render) {
-                entity.render(ctx);
-            }
-        }
-    }
-}
+    if (bullet && asteroid) {
+      // Обробляємо влучання кулі в перешкоду.
+      bullet.isDead = true; // Одна куля може влучити лише в перший об'єкт.
+      asteroid.isDead = true; // Знищуємо астероїд після влучання.
+      this.score += 10; // Додаємо десять очок за збитий астероїд.
+      this.spawnExplosion(asteroid.pos.x, asteroid.pos.y); // Створюємо частинки в місці вибуху.
+      emit('exploded', { x: asteroid.pos.x, y: asteroid.pos.y, score: this.score }); // Оголошуємо звук і оновлення рахунку.
+      if (Math.random() < 0.2) this.spawn(new Pickup(asteroid.pos.x, asteroid.pos.y)); // Створюємо аптечку з імовірністю 20 відсотків.
+      return; // Не перевіряємо інші правила для цієї пари.
+    } // Завершуємо кулю й астероїд.
+
+    if (bullet && ship) {
+      // Обробляємо влучання кулі в корабель.
+      bullet.isDead = true; // Позначаємо кулю використаною.
+      ship.takeDamage(); // Зменшуємо приватне HP корабля.
+      emit('hit', { x: ship.pos.x, y: ship.pos.y, hp: ship.hp }); // HUD і звук отримують влучання.
+      if (ship.isDead) {
+        this.spawnExplosion(ship.pos.x, ship.pos.y, 30);
+        emit('exploded', { x: ship.pos.x, y: ship.pos.y, score: this.score });
+      } // Додаємо великий вибух при знищенні.
+      return; // Завершуємо обробку влучання.
+    } // Завершуємо кулю й корабель.
+
+    if (ship && asteroid) {
+      // Обробляємо зіткнення корабля з астероїдом.
+      asteroid.isDead = true; // Зіткнення розбиває астероїд.
+      this.spawnExplosion(asteroid.pos.x, asteroid.pos.y); // Малюємо вибух на місці перешкоди.
+      ship.takeDamage(); // Віднімаємо життя корабля.
+      emit('hit', { x: ship.pos.x, y: ship.pos.y, hp: ship.hp }); // Сповіщаємо HUD і звук про шкоду.
+      if (ship.isDead) {
+        this.spawnExplosion(ship.pos.x, ship.pos.y, 30);
+        emit('exploded', { x: ship.pos.x, y: ship.pos.y, score: this.score });
+      } // Додаємо вибух корабля після останнього влучання.
+      return; // Завершуємо обробку цієї пари.
+    } // Завершуємо корабель і астероїд.
+
+    if (ship && pickup) {
+      // Обробляємо контакт корабля з pickup.
+      pickup.onPickup?.(ship); // Викликаємо складену поведінку предмета.
+      pickup.isDead = true; // Після підбору предмет видаляється.
+    } // Завершуємо обробку pickup.
+  } // Завершуємо вирішення зіткнення.
+
+  // Прибираємо всі сутності, які загинули цього кроку.
+  #sweep() {
+    for (const [id, entity] of this.#entities) {
+      // Перебираємо пари ключ-значення Map.
+      if (entity.isDead) this.#entities.delete(id); // Видаляємо лише після завершення оновлень і колізій.
+    } // Завершуємо безпечне очищення.
+  } // Завершуємо sweep.
+
+  // Малюємо арену й сутності в позиціях між кроками симуляції.
+  render(ctx, alpha = 1) {
+    ctx.clearRect(0, 0, this.width, this.height); // Стираємо попередній кадр.
+    ctx.fillStyle = '#0b0c10'; // Задаємо темний космічний фон.
+    ctx.fillRect(0, 0, this.width, this.height); // Заповнюємо все полотно фоном.
+    ctx.fillStyle = 'rgba(255,255,255,0.22)'; // Задаємо приглушений колір зірок.
+    for (let i = 0; i < 70; i += 1) {
+      const x = (i * 137) % this.width;
+      const y = (i * 83) % this.height;
+      ctx.fillRect(x, y, 1, 1);
+    } // Малюємо детерміноване зоряне поле.
+    for (const entity of this.#entities.values()) entity.render(ctx, alpha, this.width, this.height); // Делегуємо малювання кожній сутності.
+  } // Завершуємо рендер світу.
+} // Завершуємо World.

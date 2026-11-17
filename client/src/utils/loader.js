@@ -1,4 +1,3 @@
-
 // 1. HttpError: власний вид помилки для відповідей сервера
 // Проблема: функція fetch вважає відповідь 404 "успішною", бо сервер
 // таки відповів (хоч і "файлу немає"). Помилкою fetch вважає лише
@@ -15,12 +14,12 @@ export class HttpError extends Error {
     // вставляти змінні через ${...}.
     super(`HTTP ${status} для ${url}`);
     // name: назва типу помилки, її видно в консолі.
-    this.name = "HttpError";
+    this.name = 'HttpError';
     // status: код відповіді (404, 500...). Пізніше за ним ми вирішимо,
     // чи повторювати запит: 4xx повторювати марно, 5xx можна.
     this.status = status;
   }
- }
+}
 // 2. fetchJson: завантажує JSON і перевіряє, що все пройшло успішно
 // async: функція завжди повертає проміс (обіцянку результату),
 // і всередині неї можна писати await.
@@ -51,8 +50,8 @@ export async function fetchJson(url, { signal } = {}) {
 // одразу повертає результат виразу праворуч від стрілки.
 export const loadJson = (url, signal) => fetchJson(url, { signal });
 // 4. loadImage: завантажує картинку для малювання на canvas
-export async function loadImage(url, signal) { 
-   // Завантажуємо файл так само, як картинку.
+export async function loadImage(url, signal) {
+  // Завантажуємо файл так само, як картинку.
   const response = await fetch(url, { signal });
   // 404 і 500 стають помилкою.
   if (!response.ok) throw new HttpError(response.status, url);
@@ -61,12 +60,12 @@ export async function loadImage(url, signal) {
   //Розшифровуемо байти в картинку яку можна малювати на canvas
   return createImageBitmap(blob);
 }
-  // 5. loadAudio: завантажує звук і розшифровує його заздалегідь
+// 5. loadAudio: завантажує звук і розшифровує його заздалегідь
 // ctx це AudioContext (звуковий рушій браузера). Його створимо в
 // audio.js пізніше, а тут ми лише отримуємо його як параметр.
 export async function loadAudio(ctx, url, signal) {
   //Завантажуємо файл
-  const response = await fetch(url, {signal });
+  const response = await fetch(url, { signal });
   // 404 і 500 стають помилкою.
   if (!response.ok) throw new HttpError(response.status, url);
   // arrayBuffer це сирі байти файлу mp3.
@@ -90,7 +89,7 @@ function sleep(ms, signal) {
     // Таймер дочекався кінця.
     function onTimer() {
       // Знімаємо слухача, він більше не потрібен.
-      signal?.removeEventListener("abort", onAbort);
+      signal?.removeEventListener('abort', onAbort);
       resolve();
     }
     // Хтось викликав abort(), тож зупиняємо таймер і відхиляємо.
@@ -101,7 +100,7 @@ function sleep(ms, signal) {
     // { once: true } означає, що слухач спрацює максимум один раз.
     // signal?. означає "якщо signal існує". Без ? був би збій, коли
     // сигнал не передали.
-    signal?.addEventListener("abort", onAbort, { once: true });
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 // 7. withRetry: повторює невдалу операцію з паузами
@@ -112,10 +111,7 @@ function sleep(ms, signal) {
 // signal     сигнал скасування
 // onRetry    необов'язковий "підглядач": викликається перед кожною
 //            паузою (потрібен, щоб бачити повтори в консолі)
-export async function withRetry(
-  fn,
-  { attempts = 3, baseMs = 300, signal, onRetry } = {}
-) {
+export async function withRetry(fn, { attempts = 3, baseMs = 300, signal, onRetry } = {}) {
   // Цикл: attempt = 0, 1, 2... до attempts - 1.
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
@@ -176,23 +172,21 @@ function buildTasks(manifest, { audioCtx, signal, debugDelayMs, timeoutMs }) {
         return withRetry(
           // Кожна спроба отримує СВІЙ таймаут. Якщо сервер мовчить довше
           // timeoutMs, fetch завершується помилкою TimeoutError.
-          () => loader(
-            combineSignals([signal, timeoutMs ? AbortSignal.timeout(timeoutMs) : null])
-          ),
-          { signal }
+          () => loader(combineSignals([signal, timeoutMs ? AbortSignal.timeout(timeoutMs) : null])),
+          { signal },
         );
       },
     });
   };
 
   for (const [name, url] of Object.entries(manifest.images ?? {})) {
-    add("images", name, (s) => loadImage(url, s));
+    add('images', name, (s) => loadImage(url, s));
   }
   for (const [name, url] of Object.entries(manifest.sounds ?? {})) {
-    add("sounds", name, (s) => loadAudio(audioCtx, url, s));
+    add('sounds', name, (s) => loadAudio(audioCtx, url, s));
   }
   for (const [name, url] of Object.entries(manifest.json ?? {})) {
-    add("json", name, (s) => loadJson(url, s));
+    add('json', name, (s) => loadJson(url, s));
   }
 
   return tasks;
@@ -208,10 +202,7 @@ function collect(tasks, results) {
 }
 
 // 9. loadAll: усе одночасно через Promise.all + прогрес
-export async function loadAll(
-  manifest,
-  { audioCtx, onProgress, signal, debugDelayMs = 0, timeoutMs = 0 } = {}
-) {
+export async function loadAll(manifest, { audioCtx, onProgress, signal, debugDelayMs = 0, timeoutMs = 0 } = {}) {
   const tasks = buildTasks(manifest, { audioCtx, signal, debugDelayMs, timeoutMs });
   const total = tasks.length;
   let done = 0;
@@ -223,7 +214,7 @@ export async function loadAll(
       done += 1;
       onProgress?.(done, total, task.name);
       return value;
-    })
+    }),
   );
 
   // Promise.all: чекаємо на всі; при першій помилці одразу відхиляється.
@@ -234,7 +225,7 @@ export async function loadAll(
 // 10. loadAllSequential
 export async function loadAllSequential(
   manifest,
-  { audioCtx, onProgress, signal, debugDelayMs = 0, timeoutMs = 0 } = {}
+  { audioCtx, onProgress, signal, debugDelayMs = 0, timeoutMs = 0 } = {},
 ) {
   const tasks = buildTasks(manifest, { audioCtx, signal, debugDelayMs, timeoutMs });
   const results = [];

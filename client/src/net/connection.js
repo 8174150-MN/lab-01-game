@@ -1,154 +1,124 @@
-// Версія протоколу; має дорівнювати PROTOCOL_VERSION у server/src/protocol.js.
-const PROTOCOL_VERSION = 1;
+// Connection wraps WebSocket with a queue, event dispatch, and growing reconnect delays.
+const PROTOCOL_VERSION = 1; // The same version is checked by server/src/protocol.js.
 
-// export дозволяє імпортувати цю функцію з інших файлів (ESM).
 export function createConnection(url) {
-  // Map = словник "ключ → значення". Тут: тип повідомлення → набір обробників.
-  const handlers = new Map();
-  // Set = набір унікальних значень. Тут: функції, яких сповіщаємо про стан з'єднання.
-  const statusListeners = new Set();
-  // Повідомлення, надіслані поки сокет не готовий; підуть після підключення.
-  const queue = [];
-  // Коди закриття, після яких перепідключення безглузде (збігаються з CLOSE на сервері):
-  // 1009 завелике повідомлення, 4001 BAD_FORMAT, 4002 UNKNOWN_TYPE,
-  // 4004 NOT_JOINED, 4005 ROOM_NOT_FOUND.
-  const FATAL_CODES = new Set([1009, 4001, 4002, 4004, 4005]);
-  // Максимум повідомлень у черзі, щоб вона не росла безкінечно.
-  const MAX_QUEUE = 100;
-  // Поточний WebSocket; спочатку його немає (null = "порожньо").
-  let socket = null;
-  // Скільки невдалих спроб підряд (від цього залежить пауза).
-  let attempt = 0;
-  // Таймер перепідключення; зберігаємо, щоб його можна було скасувати.
-  let timer = null;
-  // true, якщо ми самі закрили з'єднання, тоді повторно не підключаємось.
-  let closedByUser = false;
-  // Функція, що повертає повідомлення join; викликається при КОЖНОМУ відкритті.
-  let hello = null;
+  const handlers = new Map(); // Each message type maps to its own Set of listeners.
+  const statusListeners = new Set(); // Connection state has separate subscribers.
+  const queue = []; // Messages wait here until the socket is open.
+  const maxQueue = 100; // The queue has a hard limit to avoid unbounded memory.
+  let socket = null; // Holds the current WebSocket instance.
+  let attempt = 0; // Counts consecutive reconnect failures.
+  let timer = null; // Stores the reconnect timeout so close() can cancel it.
+  let closedByUser = false; // Distinguishes intentional close from a network failure.
+  let hello = null; // Provides the join message for each fresh connection.
 
-  // Повідомляє слухачів про стан ("connecting", "open", "closed"); code лише для "closed".
-  function setStatus(state, code) {
-    // for...of перебирає елементи набору по одному.
-    for (const fn of statusListeners) fn(state, code);
-  }
+  // Notify all status subscribers.
+  function setStatus(state, detail) {
+    for (const listener of statusListeners) listener(state, detail); // A listener may update HUD or lobby.
+  } // Finish status dispatch.
 
-  // Надсилає об'єкт одразу: додає версію й перетворює в JSON-рядок.
-  function rawSend(msg) {
-    // ...msg розгортає поля повідомлення в новий об'єкт; v іде першим.
-    socket.send(JSON.stringify({ v: PROTOCOL_VERSION, ...msg }));
-  }
+  // Add protocol version to JSON messages while leaving binary buffers untouched.
+  function sendRaw(message) {
+    if (message instanceof ArrayBuffer || ArrayBuffer.isView(message)) {
+      socket.send(message);
+      return;
+    } // Preserve binary payloads for later labs.
+    socket.send(JSON.stringify({ v: PROTOCOL_VERSION, ...message })); // Serialize a versioned JSON object.
+  } // Finish sending one message.
 
-  // Рахує паузу перед наступною спробою й планує її.
+  // Schedule reconnect with exponential growth and random jitter.
   function scheduleReconnect() {
-    // 2 ** attempt = 1, 2, 4, 8... Множимо на 1 с; більше 15 с не чекаємо.
-    const base = Math.min(1000 * 2 ** attempt, 15000);
-    // Jitter: випадкова добавка, щоб усі клієнти не стукали в сервер одночасно.
-    const delay = base / 2 + (Math.random() * base) / 2;
-    // Запам'ятовуємо, що була ще одна спроба.
-    attempt += 1;
-    // setTimeout викличе connect через delay мілісекунд.
-    timer = setTimeout(connect, delay);
-  }
+    const delayBase = Math.min(1000 * 2 ** attempt, 15000); // Cap the waiting period at fifteen seconds.
+    const delay = Math.round(delayBase * (0.75 + Math.random() * 0.5)); // Spread clients across a jitter window.
+    attempt += 1; // The next failure waits longer.
+    timer = setTimeout(connect, delay); // Schedule a new connection attempt.
+  } // Finish reconnect scheduling.
 
-  // Створює нове з'єднання.
+  // Open a socket and attach all of its event listeners.
   function connect() {
-    // Раз викликали connect, ми знову хочемо бути підключеними.
-    closedByUser = false;
-    // Сповіщаємо інтерфейс, що почали підключатись.
-    setStatus("connecting");
-    // Браузерний вбудований WebSocket.
-    socket = new WebSocket(url);
-
-    // Подія "open": з'єднання встановлено.
-    socket.addEventListener("open", () => {
-      // Успіх: скидаємо лічильник невдач.
-      attempt = 0;
-      // Спершу join, бо сервер чекає його першим повідомленням.
-      if (hello) rawSend(hello());
-      // Потім відправляємо все, що накопичилось у черзі.
-      while (queue.length > 0) rawSend(queue.shift());
-      // Сповіщаємо інтерфейс, що ми онлайн.
-      setStatus("open");
-    });
-
-    // Подія "message": прийшло повідомлення від сервера.
-    socket.addEventListener("message", (event) => {
-      // Змінна для розібраного повідомлення.
-      let msg;
-      try {
-        // event.data це рядок; JSON.parse перетворює його назад в об'єкт.
-        msg = JSON.parse(event.data);
-      } catch {
-        // Якщо прийшов не JSON, ігноруємо.
-        return;
-      }
-      // Перевіряємо форму: має бути об'єкт з текстовим type.
-      if (!msg || typeof msg.type !== "string") return;
-      // Дістаємо обробників саме цього типу.
-      const set = handlers.get(msg.type);
-      // Якщо вони є, викликаємо кожного й передаємо повідомлення.
-      if (set) for (const fn of set) fn(msg);
-    });
-
-    // Подія "error": деталей браузер не дає, "close" прийде одразу після неї.
-    socket.addEventListener("error", () => {
-      console.warn("WebSocket error");
-    });
-
-    // Подія "close": з'єднання закрилось (сервером, мережею чи нами).
-    socket.addEventListener("close", (event) => {
-      // Передаємо стан і код, щоб інтерфейс міг пояснити причину.
-      setStatus("closed", event.code);
-      // Не перепідключаємось, якщо закрили самі або сервер нас відхилив.
-      if (closedByUser || FATAL_CODES.has(event.code)) return;
-      // Інакше пробуємо ще раз із паузою.
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return; // Avoid duplicate connections.
+    closedByUser = false; // This connection attempt is not an intentional close.
+    setStatus('connecting'); // Expose the starting state.
+    try {
+      socket = new WebSocket(url);
+    } catch (error) {
+      setStatus('closed', error);
       scheduleReconnect();
-    });
-  }
+      return;
+    } // Recover from malformed URL or constructor failure.
+    socket.binaryType = 'arraybuffer'; // Binary snapshots arrive in a browser-friendly representation.
 
-  // Надсилає повідомлення: одразу, якщо сокет готовий, інакше в чергу.
-  function send(msg) {
-    // readyState === OPEN означає, що сокет готовий до відправки.
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      rawSend(msg);
-    } else {
-      // Якщо черга повна, викидаємо найстаріше.
-      if (queue.length >= MAX_QUEUE) queue.shift();
-      // Додаємо повідомлення в кінець черги.
-      queue.push(msg);
-    }
-  }
+    socket.addEventListener('open', () => {
+      attempt = 0; // A successful connection resets the backoff.
+      if (hello) sendRaw(hello()); // Join the selected room before queued chat messages.
+      while (queue.length > 0) sendRaw(queue.shift()); // Flush messages in their original order.
+      setStatus('open'); // Notify the UI that the socket is ready.
+    }); // Finish open handling.
 
-  // Підписка на повідомлення певного типу; повертає функцію "відписатись".
-  function on(type, fn) {
-    // Якщо для цього типу ще немає набору, створюємо.
-    if (!handlers.has(type)) handlers.set(type, new Set());
-    // Додаємо обробника.
-    handlers.get(type).add(fn);
-    // Повертаємо функцію, яка прибирає цього обробника.
-    return () => handlers.get(type).delete(fn);
-  }
+    socket.addEventListener('message', (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        // Dispatch binary messages through a reserved type.
+        for (const listener of handlers.get('binary') ?? []) listener(event.data); // Keep binary data out of JSON parsing.
+        return; // Finish handling this message.
+      } // Finish binary dispatch.
+      let message; // Declare parsed data outside the try block.
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        setStatus('protocol-error', 'invalid-json');
+        return;
+      } // Ignore malformed server text safely.
+      if (!message || typeof message.type !== 'string') {
+        setStatus('protocol-error', 'invalid-shape');
+        return;
+      } // Require a type for dispatch.
+      for (const listener of handlers.get(message.type) ?? []) listener(message); // Call listeners registered for this message type.
+    }); // Finish message handling.
 
-  // Підписка на зміни стану з'єднання.
-  function onStatus(fn) {
-    statusListeners.add(fn);
-  }
+    socket.addEventListener('error', (error) => setStatus('socket-error', error)); // Surface the browser socket error to observers.
+    socket.addEventListener('close', (event) => {
+      setStatus('closed', { code: event.code, reason: event.reason }); // Expose the server's close code and reason.
+      if (closedByUser || [1000, 1008, 1009, 4001, 4002, 4004, 4005].includes(event.code)) return; // Do not retry clean or protocol-invalid closes.
+      scheduleReconnect(); // Retry transient server and network closures.
+    }); // Finish close handling.
+  } // Finish connection creation.
 
-  // Задає, яке повідомлення join слати після кожного (пере)підключення.
-  function setHello(fn) {
-    hello = fn;
-  }
+  // Send a message now or append it to the bounded queue.
+  function send(message) {
+    if (socket?.readyState === WebSocket.OPEN) {
+      sendRaw(message);
+      return;
+    } // Deliver immediately when possible.
+    if (queue.length >= maxQueue) queue.shift(); // Discard only the oldest queued message at the cap.
+    queue.push(message); // Preserve the message for a future open event.
+  } // Finish queued sending.
 
-  // Закриває з'єднання остаточно.
+  // Register a message listener and return a function that removes it.
+  function on(type, listener) {
+    if (!handlers.has(type)) handlers.set(type, new Set()); // Create the listener group lazily.
+    handlers.get(type).add(listener); // Store this listener only once.
+    return () => handlers.get(type)?.delete(listener); // Allow callers to clean up subscriptions.
+  } // Finish message subscription.
+
+  // Register a connection-state listener and return its cleanup function.
+  function onStatus(listener) {
+    statusListeners.add(listener); // Track the new state listener.
+    return () => statusListeners.delete(listener); // Allow callers to unsubscribe.
+  } // Finish status subscription.
+
+  // Store the join payload factory used after each reconnect.
+  function setHello(factory) {
+    hello = factory;
+  } // A function keeps the most recent room credentials.
+
+  // Close the active socket and cancel reconnect timers.
   function close() {
-    // Позначаємо, що перепідключення не потрібне.
-    closedByUser = true;
-    // Скасовуємо заплановану спробу, якщо вона є.
-    clearTimeout(timer);
-    // ?. означає "якщо socket існує"; 1000 це код нормального закриття.
-    socket?.close(1000);
-  }
+    closedByUser = true; // Prevent close event from scheduling a reconnect.
+    clearTimeout(timer); // Cancel a pending reconnect attempt.
+    queue.length = 0; // Drop messages belonging to the session being closed.
+    socket?.close(1000, 'left room'); // Close the current socket with a clean status code.
+  } // Finish explicit close.
 
-  // Повертаємо "публічний інтерфейс" обгортки.
-  return { connect, send, on, onStatus, setHello, close };
-}
+  // Return the narrow API consumed by session.js.
+  return { connect, send, on, onStatus, setHello, close }; // Hide socket internals behind these methods.
+} // Finish the client connection factory.

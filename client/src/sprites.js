@@ -25,8 +25,7 @@ export function drawSprite(ctx, img, x, y, width, height, rotation = 0, frame = 
     // 9 аргументів drawImage: (картинка, що вирізати: sx, sy, sw, sh,
     // куди й якого розміру вставити: dx, dy, dw, dh).
     // -width / 2 і -height / 2 дають центрування картинки.
-    ctx.drawImage(img, frame.x, frame.y, frame.w, frame.h,
-                  -width / 2, -height / 2, width, height);
+    ctx.drawImage(img, frame.x, frame.y, frame.w, frame.h, -width / 2, -height / 2, width, height);
   } else {
     // Без frame малюємо картинку цілком.
     ctx.drawImage(img, -width / 2, -height / 2, width, height);

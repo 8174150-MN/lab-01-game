@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="uk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Досліди лабораторних JavaScript</title>
+    <style>
+      body {
+        max-width: 900px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        color: #e8edf2;
+        background: #10151c;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+      }
+      button {
+        margin: 0.3rem;
+        padding: 0.7rem 1rem;
+      }
+      pre {
+        min-height: 15rem;
+        overflow: auto;
+        padding: 1rem;
+        background: #05080c;
+        border: 1px solid #355;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Досліди лабораторних</h1>
+    <p>
+      Кнопки запускають вимірювання в цьому браузері. Для досліду з вкладкою переходь у іншу вкладку на п’ять секунд,
+      поки працює setInterval.
+    </p>
+    <button id="blocking">1. Блокування кадру</button>
+    <button id="interval">2. setInterval, 10 секунд</button>
+    <button id="timestep">3. Змінний і фіксований крок</button>
+    <button id="assets">Порівняти активи, послідовно й разом</button>
+    <pre id="output">Тут з’являться фактичні виміри поточного браузера.</pre>
+    <script type="module" src="/src/diagnostics/lab1Experiments.js"></script>
+  </body>
+</html>

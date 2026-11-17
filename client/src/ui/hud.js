@@ -9,8 +9,7 @@ export function createHud(el) {
 
   // Перемальовує текст HUD із поточного стану.
   function render() {
-    el.innerText =
-      `${state.name} | ${state.perf} | Життя: ${state.hp} | Рахунок: ${state.score}`;
+    el.innerText = `${state.name} | ${state.perf} | Життя: ${state.hp} | Рахунок: ${state.score}`;
   }
 
   // Вибух: у деталях події приходить поточний рахунок.
@@ -40,8 +39,14 @@ export function createHud(el) {
 
   // Команди для main.js.
   return {
-    setName(name) { state.name = name; render(); },
+    setName(name) {
+      state.name = name;
+      render();
+    },
     // setPerf викликає ігровий цикл щокадру (текст про FPS).
-    setPerf(text) { state.perf = text; render(); },
+    setPerf(text) {
+      state.perf = text;
+      render();
+    },
   };
 }

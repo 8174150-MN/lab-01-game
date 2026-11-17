@@ -1,24 +1,23 @@
-// session.js: одна ігрова сесія = одне з’єднання з однією кімнатою.
-import { createConnection } from "./connection.js"; // твоя обгортка сокета
+// Session binds the generic socket to the room protocol.
+import { createConnection } from './connection.js'; // Reuse queue and reconnect behavior.
 
-// startSession: викликається, коли гравець натиснув Join у лобі.
-// Приймає один об’єкт з полями, тож порядок аргументів не важливий.
 export function startSession({ roomId, name, onRoster, onChat, onStatus }) {
-  const scheme = location.protocol === "https:" ? "wss" : "ws"; // на https потрібен захищений wss
-  const conn = createConnection(`${scheme}://${location.host}/ws`); // адреса сокета; Vite проксує /ws на сервер
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws'; // Match WebSocket security to the page scheme.
+  const connection = createConnection(scheme + '://' + location.host + '/ws'); // Connect through the Vite proxy or production server.
+  connection.setHello(() => ({ type: 'join', room: roomId, name })); // Rejoin the selected room after every reconnect.
+  connection.onStatus((state, detail) => onStatus?.(state, detail)); // Forward open, close, and error states to the caller.
+  connection.on('joined_success', (message) => onStatus?.('joined', message)); // Report successful room entry.
+  connection.on('roster', (message) => onRoster?.(message)); // Forward the current player list.
+  connection.on('chat', (message) => onChat?.(message)); // Forward each chat line.
 
-  // setHello: що слати першим після КОЖНОГО (пере)підключення. Сервер чекає join за 5 с.
-  conn.setHello(() => ({ type: "join", room: roomId, name })); // v додасть сама обгортка
+  connection.connect(); // Start the WebSocket handshake.
 
-  conn.onStatus((state, code) => onStatus?.(state, code)); // ?. означає: викликати, лише якщо функцію передали
-  conn.on("roster", (msg) => onRoster?.(msg)); // сервер надіслав оновлений список гравців
-  conn.on("chat", (msg) => onChat?.(msg)); // у кімнаті з’явилось повідомлення чату
-
-  conn.connect(); // запускаємо підключення
-
-  // Повертаємо те, чим інтерфейс керуватиме сесією.
   return {
-    sendChat(text) { conn.send({ type: "chat", text }); }, // надіслати повідомлення в чат
-    leave() { conn.close(); }, // вийти: закриває сокет і вимикає перепідключення
-  };
-}
+    sendChat(text) {
+      connection.send({ type: 'chat', text });
+    }, // Send chat through the validated JSON protocol.
+    leave() {
+      connection.close();
+    }, // Close the current room connection and stop retries.
+  }; // Finish the public session API.
+} // Finish session creation.

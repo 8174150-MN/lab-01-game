@@ -7,14 +7,14 @@ import { fetchJson } from './utils/loader.js';
 export class Lobby extends EventTarget {
   // #поле це приватна змінна, зовні її не видно.
   #controller = null; // AbortController, поки лобі "живе"
-  #timer = null;      // id таймера наступного оновлення
+  #timer = null; // id таймера наступного оновлення
 
   constructor({ url = '/api/rooms', intervalMs = 3000, timeoutMs = 2000 } = {}) {
     super(); // обов'язково: запускає конструктор EventTarget
-    this.url = url;               // звідки брати кімнати
+    this.url = url; // звідки брати кімнати
     this.intervalMs = intervalMs; // як часто оновлювати
-    this.timeoutMs = timeoutMs;   // скільки чекати на один запит
-    this.rooms = [];              // останній отриманий список
+    this.timeoutMs = timeoutMs; // скільки чекати на один запит
+    this.rooms = []; // останній отриманий список
   }
 
   // Геттер: lobby.running дає true, якщо оновлення зараз працюють.
@@ -102,7 +102,7 @@ export class Lobby extends EventTarget {
     this.dispatchEvent(
       new CustomEvent('joined', {
         detail: { room, name: cleanName, arena: room.arena },
-      })
+      }),
     );
   }
 }
