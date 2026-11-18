@@ -3,11 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch --env-file-if-exists=.env src/index.js",
-    "start": "node --env-file-if-exists=.env src/index.js",
-    "test": "node --test test/*.test.js"
+    "dev": "node --watch --env-file-if-exists=.env --import tsx src/index.ts",
+    "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "bench:rss": "tsx bench/replay-backpressure.ts"
   },
   "dependencies": {
+    "@dogfight/shared": "*",
     "ws": "^8.18.0"
   }
 }

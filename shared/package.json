@@ -1,0 +1,15 @@
+{
+  "name": "@dogfight/shared",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./engine": "./engine.ts",
+    "./protocol": "./protocol.ts",
+    "./types": "./types.ts",
+    "./vector": "./vector.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test test/*.test.ts"
+  }
+}
