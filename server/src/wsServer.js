@@ -3,6 +3,8 @@ import { WebSocketServer } from 'ws'; // ws реалізує кадри RFC 6455
 import { performance } from 'node:perf_hooks'; // Токен-бакет використовує монотонний годинник.
 import { config } from './config.js'; // Ліміти перевіряються один раз під час запуску.
 import { CLOSE, validateMessage } from './protocol.js'; // Кожен текстовий кадр проходить перевірку протоколу.
+import { deserializeInput } from '../../shared/protocol.js'; // Бінарний input читається тим самим кодом, що й у клієнта.
+import { ARENA_HEIGHT, ARENA_WIDTH, SIMULATION_HZ } from '../../shared/engine.js'; // Розмір арени й частота беруться зі спільної симуляції.
 
 export function setupWebSocket(server, roomManager) {
   const sockets = new WebSocketServer({
@@ -52,7 +54,7 @@ export function setupWebSocket(server, roomManager) {
       socket.pingOutstanding = false;
     }); // Pong підтверджує, що з'єднання ще активне.
 
-    // Обробляємо перевірений текстовий кадр поточного з'єднання.
+    // Обробляємо перевірені текстові та бінарні кадри поточного з'єднання.
     async function handleMessage(raw, isBinary) {
       if (raw.length > config.MAX_MESSAGE_BYTES) {
         console.warn('[ws] oversize message');
@@ -72,10 +74,23 @@ export function setupWebSocket(server, roomManager) {
       } // Закриваємо клієнта, який перевищив токен-бакет.
       tokens -= 1; // Витрачаємо один токен на прийняте повідомлення.
       if (isBinary) {
-        console.warn('[ws] binary frame is not part of Lab 4');
-        socket.close(1003, 'text protocol required');
+        if (!socket.room) {
+          socket.close(CLOSE.NOT_JOINED, 'join before input');
+          return;
+        }
+        if (socket.format !== 'binary') {
+          socket.close(1003, 'binary input is disabled for this session');
+          return;
+        }
+        try {
+          const input = deserializeInput(raw);
+          socket.room.queueInput(socket, input);
+        } catch (error) {
+          console.warn('[ws] invalid binary input:', error.message);
+          socket.close(CLOSE.BAD_FORMAT, 'invalid binary input');
+        }
         return;
-      } // У лабораторній 4 протокол приймає перевірені JSON текстові кадри.
+      } // Бінарний кадр містить тільки кнопки та seq, не координати гравця.
       const validation = validateMessage(raw.toString('utf8')); // Перевіряємо версію, тип, ключі та довжину полів.
       if (!validation.ok) {
         console.warn('[ws] invalid message:', validation.reason);
@@ -95,13 +110,14 @@ export function setupWebSocket(server, roomManager) {
           socket.close(CLOSE.ROOM_NOT_FOUND, 'room not found');
           return;
         } // Не перенаправляємо клієнта непомітно до іншої кімнати.
-        const player = await room.addClient(socket, message.name); // Додаємо гравця й записуємо його в журнал.
+        const player = await room.addClient(socket, message.name, message.format); // Додаємо гравця та обраний JSON або binary формат.
         if (!player) {
           socket.close(CLOSE.ROOM_FULL, 'room full');
           return;
         } // Дотримуємося обмеження місткості.
         socket.room = room; // Прив'язуємо вибрану кімнату до сокета.
         socket.player = player; // Прив'язуємо серверний об'єкт гравця до сокета.
+        socket.format = player.format; // Усі знімки далі кодуються у форматі цього клієнта.
         clearTimeout(joinTimer); // Скасовуємо дедлайн join після успіху.
         socket.send(
           JSON.stringify({
@@ -109,9 +125,16 @@ export function setupWebSocket(server, roomManager) {
             type: 'joined_success',
             roomId: room.id,
             playerId: player.id,
+            format: player.format,
+            seed: room.seed,
+            tickRate: SIMULATION_HZ,
+            arena: { width: ARENA_WIDTH, height: ARENA_HEIGHT },
+            state: room.getPlayerState(player.id),
+            snapshot: room.getSnapshot(),
             players: [...room.players.values()].map((member) => ({ id: member.id, name: member.name })),
           }),
-        ); // Підтверджуємо вхід і надсилаємо актуальний список гравців.
+        ); // Підтверджуємо вхід і надсилаємо перший знімок світу зі списком гравців.
+        room.startSimulation(); // Сервер починає фіксований такт після відправлення початкового стану.
         return; // Завершуємо join до обробки чату.
       } // Завершуємо стан до входу в кімнату.
 
@@ -120,6 +143,16 @@ export function setupWebSocket(server, roomManager) {
         return;
       } // Не дозволяємо одному сокету змінити кімнату без виходу.
       if (message.type === 'chat') await socket.room.sendChatMessage(socket, message.text); // Записуємо й розсилаємо перевірений чат.
+      if (message.type === 'input') {
+        if (socket.format !== 'json') {
+          socket.close(1003, 'JSON input is disabled for this session');
+          return;
+        }
+        socket.room.queueInput(socket, message);
+      } // У JSON-режимі клієнт так само передає тільки кнопки та номер послідовності.
+      if (message.type === 'ping') {
+        socket.send(JSON.stringify({ v: 1, type: 'pong', sentAt: message.sentAt }));
+      } // Повертаємо мітку часу для вимірювання RTT на клієнті.
     } // Завершуємо обробку повідомлення.
 
     socket.on('message', (raw, isBinary) => {

@@ -1,29 +1,47 @@
-// client/src/netSim.js
-
+// Цей симулятор додає затримку, розкид і втрату тільки мережевим пакетам.
+// Фізика корабля в shared/ ніколи не викликає Math.random().
 export class NetworkSimulator {
-  constructor(ws) {
-    this.ws = ws; // Посилання на оригінальний WebSocket
-    this.latency = 100; // Штучна затримка в мілісекундах (100 мс)
-    this.jitter = 20; // Розкид затримки (+/- 20 мс)
-    this.packetLoss = 0.0; // Ймовірність втрати пакетів (0.0 = 0%, 0.05 = 5%)
+  constructor({ latencyMs = 0, jitterMs = 0, packetLoss = 0 } = {}) {
+    this.latencyMs = latencyMs;
+    this.jitterMs = jitterMs;
+    this.packetLoss = packetLoss;
+    this.timers = new Set();
+    this.nextDeliveryAt = { out: 0, in: 0 };
   }
 
-  // Відправка даних на сервер із штучною затримкою
-  send(data) {
-    // Симуляція втрати пакету (якщо рандом менше ніж % втрат - ігноруємо)
-    if (Math.random() < this.packetLoss) return;
+  // Передаємо пакет від браузера до сервера після симульованих умов мережі.
+  send(data, deliver, onBytes = () => {}) {
+    return this.#transmit('out', data, deliver, onBytes);
+  }
 
-    // Обчислюємо випадкову затримку з урахуванням розкиду (jitter)
-    const currentDelay = this.latency + (Math.random() * 2 - 1) * this.jitter;
+  // Передаємо отриманий серверний пакет до гри з такими самими умовами каналу.
+  receive(data, deliver, onBytes = () => {}) {
+    return this.#transmit('in', data, deliver, onBytes);
+  }
 
-    // Затримуємо відправку пакета у мережу
-    setTimeout(
+  // Застосовуємо втрату, jitter і затримку, зберігаючи порядок у кожному напрямку.
+  #transmit(direction, data, deliver, onBytes) {
+    if (Math.random() < this.packetLoss) return false;
+    const now = performance.now();
+    const spread = (Math.random() * 2 - 1) * this.jitterMs;
+    const requestedAt = now + Math.max(0, this.latencyMs + spread);
+    const deliveryAt = Math.max(requestedAt, this.nextDeliveryAt[direction]);
+    this.nextDeliveryAt[direction] = deliveryAt + 0.1;
+    const timer = setTimeout(
       () => {
-        if (this.ws.readyState === WebSocket.OPEN) {
-          this.ws.send(data);
-        }
+        this.timers.delete(timer);
+        onBytes(data.byteLength ?? new TextEncoder().encode(String(data)).byteLength);
+        deliver();
       },
-      Math.max(0, currentDelay),
+      Math.max(0, deliveryAt - now),
     );
+    this.timers.add(timer);
+    return true;
+  }
+
+  // Скасовуємо відкладені пакети, коли гравець залишає кімнату.
+  close() {
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
   }
 }

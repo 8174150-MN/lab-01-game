@@ -1,42 +1,54 @@
-// client/src/netgraph.js
-
+// Панель показує мережеві числа без окремого таймера чи залежності від DOM.
 export class NetGraph {
   constructor() {
-    // Метрики гри для виводу
-    this.rtt = 0; // Затримка туди і назад (Ping)
-    this.snapshotAge = 0; // Час з моменту отримання останнього знімка
-    this.bytesPerSec = 0; // Трафік у байтах за секунду
-    this.pendingInputCount = 0; // Кількість інпутів у черзі клієнта
-    this.reconError = 0; // Величина виправлення позиції після звірки
-    this.bytesAccumulator = 0; // Тимчасовий лічильник байтів
-
-    // Скидаємо та перераховуємо байти/с кожну секунду
-    setInterval(() => {
-      this.bytesPerSec = this.bytesAccumulator;
-      this.bytesAccumulator = 0;
-    }, 1000);
+    this.rtt = 0;
+    this.snapshotAge = 0;
+    this.bytesPerSec = 0;
+    this.pendingInputCount = 0;
+    this.reconError = 0;
+    this.lastSnapshotAt = 0;
+    this.byteWindowStartedAt = performance.now();
+    this.byteWindowTotal = 0;
   }
 
-  // Запис розміру отриманого/відправленого пакета
+  // RTT береться з відповіді сервера на пакет ping.
+  setRtt(milliseconds) {
+    this.rtt = milliseconds;
+  }
+
+  // Новий знімок скидає вік його віку до нуля.
+  snapshotReceived() {
+    this.lastSnapshotAt = performance.now();
+    this.snapshotAge = 0;
+  }
+
+  // Рахуємо байти обох напрямків і оновлюємо середнє за останнє вікно часу.
   addBytes(count) {
-    this.bytesAccumulator += count;
+    this.byteWindowTotal += count;
+    const now = performance.now();
+    const elapsed = now - this.byteWindowStartedAt;
+    if (elapsed >= 1000) {
+      this.bytesPerSec = Math.round((this.byteWindowTotal * 1000) / elapsed);
+      this.byteWindowTotal = 0;
+      this.byteWindowStartedAt = now;
+    }
   }
 
-  // Малювання інформаційної панелі на Canvas
+  // Малюємо всі п'ять потрібних метрик поверх арени.
   draw(ctx) {
+    const now = performance.now();
+    this.snapshotAge = this.lastSnapshotAt ? now - this.lastSnapshotAt + this.rtt / 2 : 0;
     ctx.save();
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.fillRect(10, 10, 220, 110); // Темний фон під текст
-
-    ctx.fillStyle = '#00FF00'; // Зелений колір тексту
-    ctx.font = '12px monospace';
-
-    // Виводимо всі необхідні метрики за вимогами лаби 5
-    ctx.fillText(`RTT (Ping): ${Math.round(this.rtt)} ms`, 20, 30);
-    ctx.fillText(`Snapshot Age: ${Math.round(this.snapshotAge)} ms`, 20, 45);
-    ctx.fillText(`Bandwidth: ${this.bytesPerSec} bytes/s`, 20, 60);
-    ctx.fillText(`Input Queue: ${this.pendingInputCount}`, 20, 75);
-    ctx.fillText(`Recon Error: ${this.reconError.toFixed(2)} px`, 20, 90);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+    ctx.fillRect(10, 72, 285, 105);
+    ctx.fillStyle = '#7CFF8A';
+    ctx.font = '13px monospace';
+    ctx.fillText('Мережа', 20, 91);
+    ctx.fillText('RTT: ' + Math.round(this.rtt) + ' ms', 20, 109);
+    ctx.fillText('Вік знімка: ' + Math.round(this.snapshotAge) + ' ms', 20, 127);
+    ctx.fillText('Трафік: ' + this.bytesPerSec + ' байт/с', 20, 145);
+    ctx.fillText('Input у черзі: ' + this.pendingInputCount, 20, 163);
+    ctx.fillText('Поправка: ' + this.reconError.toFixed(1) + ' px', 20, 181);
     ctx.restore();
   }
 }

@@ -12,6 +12,7 @@ import { createLobbyView } from './ui/lobby.js'; // Окремо малює DOM 
 import { createHud } from './ui/hud.js'; // Відображає ім'я, життя, рахунок і метрики.
 import { showError } from './ui/errorScreen.js'; // Показує помилку й кнопку повтору.
 import { startSession } from './net/session.js'; // Підключає до кімнати WebSocket-клієнта.
+import { NetworkGame } from './net/game.js'; // Передбачає власний рух і малює серверні знімки.
 
 // Знаходимо полотно та контекст малювання один раз під час старту модуля.
 const canvas = document.getElementById('gameCanvas'); // Canvas показує арену.
@@ -26,6 +27,7 @@ let ship = null; // Посилання на поточний корабель г
 let lobby = null; // Lobby живе, поки гравець перебуває на екрані кімнат.
 let lobbyView = null; // DOM-подання лобі має окремі команди show та hide.
 let session = null; // WebSocket-сесія відкривається після вибору кімнати.
+let networkGame = null; // Мережева симуляція з'являється після входу до кімнати.
 let playing = false; // Прапорець вмикає симуляцію після натискання Join.
 let loadController = null; // Контролер дозволяє скасувати поточне завантаження.
 let respawnTime = 0; // Таймер відродження корабля вимірюється в секундах.
@@ -47,6 +49,7 @@ function resizeCanvas() {
     world.width = width;
     world.height = height;
   } // Оновлюємо межі арени після зміни вікна.
+  networkGame?.setViewport(width, height); // Мережева арена масштабується під новий розмір вікна.
 } // Завершуємо підлаштування canvas.
 
 window.addEventListener('resize', resizeCanvas); // Повторно налаштовуємо bitmap при зміні розміру вікна.
@@ -75,6 +78,15 @@ function simulate(dt) {
     thrust: input.isDown('ArrowUp'),
     firePressed: input.justPressed('Space'),
   }; // Зчитуємо клавіші один раз за крок.
+  if (networkGame) {
+    if (commands.firePressed) networkGame.queueFire(); // Локально показуємо постріл одразу, не чекаючи сервера.
+    networkGame.update(dt, {
+      gas: commands.thrust,
+      turn: Number(commands.right) - Number(commands.left),
+    }); // Надсилаємо тільки кнопки та прогнозуємо свій фіксований крок.
+    input.clearJustPressed(); // Одноразовий постріл не повторюється в наступному кадрі.
+    return; // Сервер керує всіма сутностями, тож локальний World тут не рухає корабель.
+  }
   world.step(dt, commands); // Передаємо чистий стан вводу у світ.
   input.clearJustPressed(); // Одноразові клавіші не повторюються в наступному кроці.
   if (ship.isDead) {
@@ -99,6 +111,10 @@ function simulate(dt) {
 
 // Малюємо інтерпольований стан світу, щоб корабель був плавним і на 120 Hz.
 function render(alpha) {
+  if (networkGame) {
+    networkGame.render(ctx); // Мережевий світ малює свій корабель і серверні знімки.
+    return;
+  }
   world.render(ctx, alpha); // World використовує alpha між попереднім і поточним станом.
 } // Завершуємо кадр.
 
@@ -144,22 +160,48 @@ function showRoster(players = []) {
 } // Завершуємо оновлення списку.
 
 // Стартуємо локальний матч після натискання Join у лобі.
-function joinGame({ room, name, arena }) {
+function joinGame({ room, name, arena, network = {} }) {
   playing = true; // Дозволяємо симуляції й рендеру початися.
   hud.setName(name); // Показуємо ім'я власного корабля.
   lobbyView.hide(); // Приховуємо список кімнат і скасовуємо його запит.
   session?.leave(); // Закриваємо попередню сесію, якщо вона існувала.
+  networkGame = network.authoritative ? new NetworkGame({ prediction: network.prediction !== false }) : null; // Без галочки запускається початкова гра лабораторної 4.
+  networkGame?.setViewport(width, height); // Мережевій грі потрібен розмір canvas для масштабу арени.
   session = startSession({
     roomId: room.id,
     name,
+    format: network.format ?? 'binary',
+    network: {
+      latencyMs: Number(network.latencyMs ?? 0),
+      jitterMs: Number(network.jitterMs ?? 0),
+      packetLoss: Number(network.packetLoss ?? 0),
+    },
     onRoster: (message) => showRoster(message.players),
     onChat: (message) => addChatMessage(message.sender, message.text),
+    onJoined: (message) => {
+      networkGame?.initialize(message); // Починаємо прогноз із стану, який видав сервер.
+      hud.setGameState(message.state); // Починаємо новий матч із життями та рахунком із сервера.
+      showRoster(message.players);
+    },
+    onSnapshot: (snapshot) => networkGame?.receiveSnapshot(snapshot), // Звіряємо локальний стан зі знімком.
+    onPong: (message) => networkGame?.receivePong(message), // RTT вимірюється запитом і відповіддю сервера.
+    onBytes: (count) => networkGame?.graph.addBytes(count), // Рахуємо отриманий і відправлений трафік.
     onStatus: (status, data) => {
       if (status === 'joined' && data?.players) showRoster(data.players);
     },
   }); // Приєднуємося до сервера та слухаємо кімнатні події.
-  const count = Number(arena?.asteroidCount ?? defaultArena.asteroidCount) || 5; // Поєднуємо кімнату з arena.json або початковою кількістю.
-  for (let i = 0; i < count; i += 1) world.spawn(new Asteroid(Math.random() * width, Math.random() * height, 16)); // Створюємо перешкоди матчу.
+  networkGame?.setInputSender(session.sendInput); // У мережевому режимі передаємо кнопки серверу.
+  if (!networkGame) {
+    world = new World(width, height); // Повертаємо локальну модель світу лабораторної 4.
+    ship = new Ship(width / 2, height / 2); // Створюємо корабель локального матчу.
+    world.spawn(ship); // Додаємо корабель у той самий World, що використовувався до лабораторної 5.
+    respawnTime = 0; // Новий матч починається без старого таймера респауну.
+    asteroidTimer = 0; // Перший додатковий астероїд з'явиться через стандартні дві секунди.
+    const count = Number(arena?.asteroidCount ?? defaultArena.asteroidCount) || 5; // Беремо кількість із arena.json, як у лабораторній 4.
+    for (let index = 0; index < count; index += 1) {
+      world.spawn(new Asteroid(Math.random() * width, Math.random() * height, 16)); // Локальна гра зберігає свої рухомі астероїди та homing.
+    }
+  }
   document.getElementById('chatBox').hidden = false; // Відкриваємо чат після входу.
   document.getElementById('leaveGameBtn').hidden = false; // Показуємо вихід із кімнати.
   loop.start(); // Починаємо rAF лише після вибору кімнати.
@@ -253,6 +295,7 @@ document.getElementById('leaveGameBtn').addEventListener('click', () => {
   playing = false; // Вимикаємо ігровий стан.
   session?.leave(); // Закриваємо WebSocket і звільняємо кімнату на сервері.
   session = null; // Прибираємо застаріле посилання на сесію.
+  networkGame = null; // Прибираємо передбачення й історію знімків попереднього матчу.
   document.getElementById('chatBox').hidden = true; // Ховаємо чат.
   document.getElementById('leaveGameBtn').hidden = true; // Ховаємо кнопку виходу.
   document.getElementById('lobby').hidden = false; // Повертаємо лобі.

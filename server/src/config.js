@@ -24,6 +24,6 @@ export const config = Object.freeze({
   MAX_ROOMS: readInteger('MAX_ROOMS', 20, 1, 1000), // Обмежуємо кількість кімнат у процесі.
   MAX_PLAYERS_PER_ROOM: readInteger('MAX_PLAYERS_PER_ROOM', 10, 1, 100), // Обмежуємо кількість сокетів в одній кімнаті.
   MAX_MESSAGE_BYTES: readInteger('MAX_MESSAGE_BYTES', 2048, 64, 65536), // Обмежуємо розмір WebSocket-повідомлення.
-  MAX_MESSAGES_PER_SECOND: readInteger('MAX_MESSAGES_PER_SECOND', 30, 1, 1000), // Налаштовуємо місткість і поповнення токен-бакета.
+  MAX_MESSAGES_PER_SECOND: readInteger('MAX_MESSAGES_PER_SECOND', 120, 1, 1000), // Залишаємо запас понад 30 input-пакетів/с плюс ping та chat.
   ENABLE_DEMOS: process.env.ENABLE_DEMOS !== 'false', // Вмикаємо локальні навчальні маршрути, якщо їх явно не вимкнули.
 }); // Захищаємо перевірені параметри від випадкової зміни під час роботи.

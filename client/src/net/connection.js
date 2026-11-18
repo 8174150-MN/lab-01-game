@@ -12,6 +12,11 @@ export function createConnection(url) {
   let closedByUser = false; // Distinguishes intentional close from a network failure.
   let hello = null; // Provides the join message for each fresh connection.
 
+  // Report actual WebSocket traffic after the simulator decides to deliver it.
+  function reportTraffic(direction, bytes) {
+    for (const listener of handlers.get('traffic') ?? []) listener({ direction, bytes });
+  } // Keep byte counters separate from JSON message dispatch.
+
   // Notify all status subscribers.
   function setStatus(state, detail) {
     for (const listener of statusListeners) listener(state, detail); // A listener may update HUD or lobby.
@@ -21,9 +26,12 @@ export function createConnection(url) {
   function sendRaw(message) {
     if (message instanceof ArrayBuffer || ArrayBuffer.isView(message)) {
       socket.send(message);
+      reportTraffic('out', message.byteLength);
       return;
     } // Preserve binary payloads for later labs.
-    socket.send(JSON.stringify({ v: PROTOCOL_VERSION, ...message })); // Serialize a versioned JSON object.
+    const payload = JSON.stringify({ v: PROTOCOL_VERSION, ...message });
+    socket.send(payload);
+    reportTraffic('out', new TextEncoder().encode(payload).byteLength);
   } // Finish sending one message.
 
   // Schedule reconnect with exponential growth and random jitter.
@@ -56,6 +64,11 @@ export function createConnection(url) {
     }); // Finish open handling.
 
     socket.addEventListener('message', (event) => {
+      const receivedBytes =
+        event.data instanceof ArrayBuffer || ArrayBuffer.isView(event.data)
+          ? event.data.byteLength
+          : new TextEncoder().encode(String(event.data)).byteLength;
+      reportTraffic('in', receivedBytes);
       if (event.data instanceof ArrayBuffer) {
         // Dispatch binary messages through a reserved type.
         for (const listener of handlers.get('binary') ?? []) listener(event.data); // Keep binary data out of JSON parsing.

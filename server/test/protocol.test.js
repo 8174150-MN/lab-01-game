@@ -6,7 +6,7 @@ import { CLOSE, validateMessage } from '../src/protocol.js'; // Import the produ
 test('valid join messages return only allowlisted fields', () => {
   const result = validateMessage(JSON.stringify({ v: 1, type: 'join', room: 'default_room', name: 'Pilot' })); // Validate a normal join.
   assert.equal(result.ok, true); // The message is accepted.
-  assert.deepEqual(result.message, { type: 'join', room: 'default_room', name: 'Pilot' }); // Only trusted fields are returned.
+  assert.deepEqual(result.message, { type: 'join', room: 'default_room', name: 'Pilot', format: 'binary' }); // The default binary format is included with the allowlisted fields.
 }); // Finish join validation test.
 
 test('invalid shape and unknown message types are rejected with close codes', () => {

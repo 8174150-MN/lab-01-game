@@ -9,7 +9,7 @@ export class Lobby extends EventTarget {
   #controller = null; // AbortController, поки лобі "живе"
   #timer = null; // id таймера наступного оновлення
 
-  constructor({ url = '/api/rooms', intervalMs = 3000, timeoutMs = 2000 } = {}) {
+  constructor({ url = '/api/rooms', intervalMs = 1000, timeoutMs = 2000 } = {}) {
     super(); // обов'язково: запускає конструктор EventTarget
     this.url = url; // звідки брати кімнати
     this.intervalMs = intervalMs; // як часто оновлювати
@@ -87,8 +87,40 @@ export class Lobby extends EventTarget {
     }
   }
 
+  // Створюємо кімнату через POST /api/rooms і додаємо її до списку лобі.
+  async createRoom(name) {
+    const cleanName = String(name ?? '').trim(); // Прибираємо пробіли, перш ніж надсилати назву серверу.
+    if (!cleanName || cleanName.length > 40) {
+      throw new Error('Назва кімнати має містити від 1 до 40 символів'); // Показуємо зрозумілу помилку до HTTP-запиту.
+    }
+
+    const response = await fetch(this.url, {
+      method: 'POST', // POST просить сервер створити новий запис кімнати.
+      headers: { 'Content-Type': 'application/json' }, // Повідомляємо серверу, що тіло має формат JSON.
+      body: JSON.stringify({ name: cleanName }), // Надсилаємо лише перевірену назву кімнати.
+      signal: this.#controller?.signal, // Дозволяємо скасувати запит, якщо гравець закриє лобі.
+    });
+
+    if (!response.ok) {
+      const error = new Error('Сервер повернув HTTP ' + response.status); // Перетворюємо 4xx/5xx на звичайну помилку.
+      error.name = 'HttpError'; // DOM-подання покаже статус у зрозумілому повідомленні.
+      error.status = response.status; // Зберігаємо код відповіді для повідомлення.
+      throw error;
+    }
+
+    const created = await response.json(); // Читаємо ID і назву нової кімнати з відповіді сервера.
+    if (!created || typeof created.id !== 'string' || typeof created.name !== 'string') {
+      throw new Error('Сервер повернув неправильні дані кімнати'); // Не додаємо пошкоджену відповідь у список.
+    }
+
+    const room = { arena: { asteroidCount: 5 }, ...created }; // Додаємо стандартне поле арени для сумісності з лобі.
+    this.rooms = [...this.rooms.filter((item) => item.id !== room.id), room]; // Оновлюємо список без дубля тієї самої кімнати.
+    this.dispatchEvent(new CustomEvent('roomsChanged', { detail: this.rooms })); // Перемальовуємо список у DOM.
+    return room; // Даємо кнопці вибрати створену кімнату автоматично.
+  }
+
   // join(): гравець натиснув Join з іменем і кімнатою.
-  join(roomId, name) {
+  join(roomId, name, network = {}) {
     // find шукає першу кімнату з цим id.
     const room = this.rooms.find((r) => r.id === roomId);
     // String(...).trim() прибирає пробіли з країв імені.
@@ -101,7 +133,7 @@ export class Lobby extends EventTarget {
     this.stop(); // гравець іде з лобі: усі запити скасовуємо
     this.dispatchEvent(
       new CustomEvent('joined', {
-        detail: { room, name: cleanName, arena: room.arena },
+        detail: { room, name: cleanName, arena: room.arena, network },
       }),
     );
   }

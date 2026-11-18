@@ -21,7 +21,7 @@ export function createHud(el) {
 
   // Корабель отримав удар: у деталях лишилось життів.
   bus.addEventListener('hit', (e) => {
-    state.hp = e.detail.hp;
+    if (e.detail.local !== false) state.hp = e.detail.hp;
     render();
   });
 
@@ -46,6 +46,12 @@ export function createHud(el) {
     // setPerf викликає ігровий цикл щокадру (текст про FPS).
     setPerf(text) {
       state.perf = text;
+      render();
+    },
+    // Мережева лабораторна встановлює авторитетні життя й рахунок із сервера.
+    setGameState({ hp, score } = {}) {
+      if (Number.isFinite(hp)) state.hp = hp;
+      if (Number.isFinite(score)) state.score = score;
       render();
     },
   };

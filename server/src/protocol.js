@@ -1,5 +1,5 @@
-// Сервер і браузер використовують цей компактний версійований JSON протокол.
-export const PROTOCOL_VERSION = 1; // Змінюй номер, якщо зміниться формат повідомлень.
+// Сервер перевіряє текстові повідомлення до того, як їх торкнеться логіка гри.
+export const PROTOCOL_VERSION = 1;
 export const CLOSE = Object.freeze({
   BAD_FORMAT: 4001,
   UNKNOWN_TYPE: 4002,
@@ -8,48 +8,88 @@ export const CLOSE = Object.freeze({
   ROOM_NOT_FOUND: 4005,
   RATE_LIMIT: 4006,
   ROOM_FULL: 4007,
-}); // Іменовані коди роблять причини закриття сокета зрозумілими.
+});
 
+// Повертаємо помилку у спільному для всіх перевірок форматі.
 function failure(code, reason) {
   return { ok: false, code, reason };
-} // Повертаємо помилку перевірки в єдиному форматі.
+}
+
+// Повертаємо повідомлення лише після перевірки кожного поля.
 function success(message) {
   return { ok: true, message };
-} // Повертаємо лише перевірене повідомлення з дозволеними полями.
+}
+
+// Забороняємо непередбачені поля, щоб клієнт не підсовував координати корабля.
 function hasOnlyKeys(message, allowed) {
   return Object.keys(message).every((key) => allowed.includes(key));
-} // Відхиляємо поля, яких протокол не описує.
+}
+
+// Перевіряємо рядкове поле та прибираємо пробіли по краях.
 function cleanString(value, min, max) {
-  if (typeof value !== 'string') return null; // Не приймаємо число чи інший тип замість рядка.
+  if (typeof value !== 'string') return null;
   const result = value.trim();
   return result.length >= min && result.length <= max ? result : null;
-} // Обрізаємо пробіли й перевіряємо довжину рядкового поля.
+}
 
+// Розбираємо, перевіряємо версію й тип одного JSON-повідомлення.
 export function validateMessage(raw) {
-  let message; // Оголошуємо змінну до try, щоб бачити її після парсингу.
+  let message;
   try {
     message = JSON.parse(raw);
   } catch {
     return failure(CLOSE.BAD_FORMAT, 'invalid JSON');
-  } // Пошкоджений JSON не є повідомленням протоколу.
-  if (!message || typeof message !== 'object' || Array.isArray(message))
-    return failure(CLOSE.BAD_FORMAT, 'message must be an object'); // Вимагаємо звичайний об'єкт як форму повідомлення.
-  if (message.v !== PROTOCOL_VERSION) return failure(CLOSE.BAD_FORMAT, 'unsupported protocol version'); // Відхиляємо клієнта з іншою версією.
-  if (typeof message.type !== 'string') return failure(CLOSE.BAD_FORMAT, 'type must be a string'); // Вимагаємо рядкове поле type.
+  }
+  if (!message || typeof message !== 'object' || Array.isArray(message)) {
+    return failure(CLOSE.BAD_FORMAT, 'message must be an object');
+  }
+  if (message.v !== PROTOCOL_VERSION) return failure(CLOSE.BAD_FORMAT, 'unsupported protocol version');
+  if (typeof message.type !== 'string') return failure(CLOSE.BAD_FORMAT, 'type must be a string');
+
   if (message.type === 'join') {
-    // Перевіряємо вхід до кімнати окремо від повідомлення чату.
-    if (!hasOnlyKeys(message, ['v', 'type', 'room', 'name'])) return failure(CLOSE.BAD_FORMAT, 'unexpected join field'); // Відхиляємо зайві поля.
-    const room = cleanString(message.room, 1, 64); // ID кімнати має бути непорожнім і коротким.
-    const name = cleanString(message.name, 1, 24); // Обмежуємо ім'я для чату й списку учасників.
-    if (!room || !name) return failure(CLOSE.BAD_FORMAT, 'invalid join fields'); // Обидва поля обов'язкові.
-    return success({ type: 'join', room, name }); // Повертаємо лише дані, які використовує сервер.
-  } // Завершуємо перевірку входу.
+    if (!hasOnlyKeys(message, ['v', 'type', 'room', 'name', 'format'])) {
+      return failure(CLOSE.BAD_FORMAT, 'unexpected join field');
+    }
+    const room = cleanString(message.room, 1, 64);
+    const name = cleanString(message.name, 1, 24);
+    const format = message.format ?? 'binary';
+    if (!room || !name || !['binary', 'json'].includes(format)) {
+      return failure(CLOSE.BAD_FORMAT, 'invalid join fields');
+    }
+    return success({ type: 'join', room, name, format });
+  }
+
   if (message.type === 'chat') {
-    // Перевіряємо структуру повідомлення чату.
-    if (!hasOnlyKeys(message, ['v', 'type', 'text'])) return failure(CLOSE.BAD_FORMAT, 'unexpected chat field'); // Відхиляємо незадокументовані дані клієнта.
-    const text = cleanString(message.text, 1, 500); // Обмежуємо довжину й відхиляємо повідомлення з самих пробілів.
-    if (!text) return failure(CLOSE.BAD_FORMAT, 'invalid chat text'); // Вимагаємо непорожній текст.
-    return success({ type: 'chat', text }); // Повертаємо лише дозволений вміст чату.
-  } // Завершуємо перевірку чату.
-  return failure(CLOSE.UNKNOWN_TYPE, 'unknown message type'); // Закриваємо сокет замість мовчазного ігнорування невідомого типу.
-} // Завершуємо перевірку протоколу.
+    if (!hasOnlyKeys(message, ['v', 'type', 'text'])) return failure(CLOSE.BAD_FORMAT, 'unexpected chat field');
+    const text = cleanString(message.text, 1, 500);
+    if (!text) return failure(CLOSE.BAD_FORMAT, 'invalid chat text');
+    return success({ type: 'chat', text });
+  }
+
+  if (message.type === 'input') {
+    if (!hasOnlyKeys(message, ['v', 'type', 'seq', 'gas', 'turn', 'shoot'])) {
+      return failure(CLOSE.BAD_FORMAT, 'unexpected input field');
+    }
+    const validSequence = Number.isInteger(message.seq) && message.seq >= 0 && message.seq <= 0xffffffff;
+    const validButtons = typeof message.gas === 'boolean' && typeof message.shoot === 'boolean';
+    if (!validSequence || !validButtons || ![-1, 0, 1].includes(message.turn)) {
+      return failure(CLOSE.BAD_FORMAT, 'invalid input fields');
+    }
+    return success({
+      type: 'input',
+      seq: message.seq,
+      gas: message.gas,
+      turn: message.turn,
+      shoot: message.shoot,
+    });
+  }
+
+  if (message.type === 'ping') {
+    if (!hasOnlyKeys(message, ['v', 'type', 'sentAt']) || !Number.isFinite(message.sentAt)) {
+      return failure(CLOSE.BAD_FORMAT, 'invalid ping');
+    }
+    return success({ type: 'ping', sentAt: message.sentAt });
+  }
+
+  return failure(CLOSE.UNKNOWN_TYPE, 'unknown message type');
+}
