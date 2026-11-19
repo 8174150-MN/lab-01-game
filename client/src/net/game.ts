@@ -5,14 +5,22 @@ import {
   FIXED_DT,
   createShipState,
   createBullet,
+  isInputAcknowledged,
   integrate,
+  integrateBulletInto,
+  integrateInto,
   integrateBullet,
   interpolateAngle,
+  reconcilePrediction,
   wrapCoordinate,
   wrappedDelta,
+  type MutableBulletMotion,
+  type MutableShipMotion,
 } from '@dogfight/shared/engine';
 import { NetGraph } from '../netgraph.js';
-import { sprites, drawSprite } from '../sprites.js'; // Використовуємо ті самі спрайтшити, що й локальна гра.
+import { markProfileEnd, markProfileStart } from '../diagnostics/performance.js'; // Позначаємо звірку стану, коли увімкнено профіль.
+import { sprites, drawSprite, fullSpriteFrame } from '../sprites.js'; // Використовуємо кешовані рамки sprite sheets.
+import type { SpriteFrame } from '../sprites.js';
 import { emit } from '../events.js'; // Повідомляємо наявну звукову шину та HUD про мережеві події.
 import {
   asSeq,
@@ -27,31 +35,43 @@ import {
 } from '@dogfight/shared/types';
 import type { JoinedMessage } from '@dogfight/shared/protocol';
 
+const renderAllocationBaseline =
+  typeof globalThis.location !== 'undefined' &&
+  new URLSearchParams(globalThis.location.search).get('lab7-render-baseline') === '1'; // Повертає старий рендер лише для контрольного виміру до оптимізації.
+const bulletSpriteFrames: readonly SpriteFrame[] = [
+  { x: 0, y: 0, w: 32, h: 32 },
+  { x: 32, y: 0, w: 32, h: 32 },
+  { x: 64, y: 0, w: 32, h: 32 },
+  { x: 96, y: 0, w: 32, h: 32 },
+]; // Кадри sprite sheet куль створюються один раз при завантаженні модуля.
+const SNAPSHOT_HISTORY_LIMIT = 8; // Восьми станів вистачає для інтерполяції й вони не тримають старі об'єкти довго.
+
 interface NetworkControls {
-  readonly gas: boolean;
-  readonly turn: -1 | 0 | 1;
+  gas: boolean;
+  turn: -1 | 0 | 1;
 }
 interface SnapshotEntry {
   readonly receivedAt: number;
   readonly snapshot: Snapshot;
 }
+interface InterpolationPair {
+  first: SnapshotEntry;
+  second: SnapshotEntry;
+  alpha: number;
+}
+type BulletRenderState = Pick<BulletEntity, 'x' | 'y' | 'vx' | 'vy' | 'ttl'>;
 interface Effect {
-  readonly x: number;
-  readonly y: number;
-  readonly vx: number;
-  readonly vy: number;
-  readonly ttl: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  ttl: number;
 }
 interface NetworkGameOptions {
   readonly prediction?: boolean;
   readonly onInput?: (input: InputCommand) => void;
 }
 type PredictedBullet = BulletEntity & { readonly seq: Seq };
-
-// Порівнюємо послідовності з урахуванням переповнення uint32.
-function isAcknowledged(sequence: Seq, ackSeq: Seq): boolean {
-  return (ackSeq - sequence) >>> 0 < 0x80000000;
-}
 
 // Залишаємо в клієнтському стані лише поля, які сервер реально передає.
 function copyShipState(
@@ -92,8 +112,13 @@ export class NetworkGame {
   lastAuthoritativeState: ShipState | null;
   lastAsteroids: Map<EntityId, AsteroidEntity>;
   effects: Effect[];
+  effectPool: Effect[];
   thrusting: boolean;
   renderInput: NetworkControls;
+  #renderShipMotion: MutableShipMotion = { x: 0, y: 0, vx: 0, vy: 0, angle: 0 }; // Інтерполяція прогнозу повторно використовує цей стан.
+  #renderBulletMotion: MutableBulletMotion = { x: 0, y: 0, vx: 0, vy: 0, ttl: 0 }; // Кулі теж рендеряться через один scratch.
+  #interpolationScratch: InterpolationPair | null = null; // Пара snapshot змінює поля замість нової структури щокадру.
+  #arenaCanvas: HTMLCanvasElement | null = null; // Статичне зоряне поле малюється в кеш один раз.
 
   constructor({ prediction = true, onInput = () => {} }: NetworkGameOptions = {}) {
     this.prediction = prediction;
@@ -115,6 +140,7 @@ export class NetworkGame {
     this.lastAuthoritativeState = null;
     this.lastAsteroids = new Map();
     this.effects = [];
+    this.effectPool = []; // Повторно використовуємо короткоживучі частинки в мережевому рендері.
     this.thrusting = false;
     this.renderInput = { gas: false, turn: 0 };
   }
@@ -146,7 +172,7 @@ export class NetworkGame {
     if (!initialState) return;
     this.lastAuthoritativeState = copyShipState(initialState);
     this.lastAsteroids.clear();
-    this.effects.length = 0;
+    this.#clearEffects(); // Звільняємо активні частинки до пулу, не втрачаючи їхні об'єкти.
     this.thrusting = false;
     emit('shipSpawned', { hp: initialState.hp }); // Оновлюємо життя в тому самому HUD, що й до мережевого режиму.
     if (welcome.snapshot) this.receiveSnapshot(welcome.snapshot); // Початковий знімок одразу показує астероїди й інших пілотів.
@@ -162,7 +188,8 @@ export class NetworkGame {
     if (!this.playerId || !this.localState) return;
     this.accumulator += frameDt;
     this.thrusting = Boolean(controls.gas); // Вогонь двигуна відповідає натисканню газу в мережевому режимі.
-    this.renderInput = { gas: Boolean(controls.gas), turn: controls.turn };
+    this.renderInput.gas = Boolean(controls.gas); // Переиспользуем управляющий input між кадрами.
+    this.renderInput.turn = controls.turn; // Оновлюємо поворот у тому самому об'єкті.
     this.correctionX *= Math.exp(-frameDt / 0.1);
     this.correctionY *= Math.exp(-frameDt / 0.1);
     this.correctionAngle *= Math.exp(-frameDt / 0.1);
@@ -213,28 +240,51 @@ export class NetworkGame {
   // Додаємо знімок до історії, звіряємо свій стан і повторюємо непідтверджені input.
   receiveSnapshot(snapshot: Snapshot): void {
     if (!Array.isArray(snapshot.players) || !Array.isArray(snapshot.bullets)) return;
+    markProfileStart('reconcile'); // Починаємо замір звірки з серверним snapshot.
     const receivedAt = performance.now();
     const previousSnapshot = this.snapshotHistory.at(-1)?.snapshot;
     this.graph.snapshotReceived();
     this.snapshotHistory.push({ receivedAt, snapshot });
-    while (this.snapshotHistory.length > 30) this.snapshotHistory.shift();
+    while (this.snapshotHistory.length > SNAPSHOT_HISTORY_LIMIT) this.snapshotHistory.shift();
 
-    const asteroidIds = new Set();
-    for (const asteroid of snapshot.asteroids ?? []) asteroidIds.add(asteroid.id);
+    const asteroids = snapshot.asteroids ?? [];
     let asteroidExploded = false;
     for (const [id, asteroid] of this.lastAsteroids) {
-      if (asteroidIds.has(id)) continue;
+      let stillExists = false;
+      for (const current of asteroids) {
+        if (current.id === id) {
+          stillExists = true;
+          break;
+        }
+      }
+      if (stillExists) continue;
       this.#spawnExplosion(asteroid.x, asteroid.y);
       asteroidExploded = true;
     }
-    this.lastAsteroids = new Map((snapshot.asteroids ?? []).map((asteroid) => [asteroid.id, asteroid]));
+    this.lastAsteroids.clear(); // Повторно використовуємо Map замість створення нової на кожен знімок.
+    for (const asteroid of asteroids) this.lastAsteroids.set(asteroid.id, asteroid); // П'ять астероїдів швидше звірити циклом без проміжного масиву.
 
-    const serverPlayer = snapshot.players.find((player) => player.id === this.playerId);
-    if (!serverPlayer) return;
-    let remoteExploded = false;
-    const previousPlayers = new Map((previousSnapshot?.players ?? []).map((player) => [player.id, player]));
+    let serverPlayer: ShipEntity | undefined;
     for (const player of snapshot.players) {
-      const previousPlayer = previousPlayers.get(player.id);
+      if (player.id === this.playerId) {
+        serverPlayer = player;
+        break;
+      }
+    }
+    if (!serverPlayer) {
+      markProfileEnd('reconcile'); // Закриваємо замір і для snapshot без локального корабля.
+      return;
+    }
+    let remoteExploded = false;
+    const previousPlayers = previousSnapshot?.players ?? [];
+    for (const player of snapshot.players) {
+      let previousPlayer: ShipEntity | undefined;
+      for (const candidate of previousPlayers) {
+        if (candidate.id === player.id) {
+          previousPlayer = candidate;
+          break;
+        }
+      }
       if (player.id === this.playerId || !previousPlayer || player.hp >= previousPlayer.hp) continue;
       emit('hit', { x: player.x, y: player.y, hp: player.hp, local: false }); // Звук є, але життя власника HUD не змінюються.
       if (player.hp === 0) {
@@ -263,11 +313,15 @@ export class NetworkGame {
     this.lastAuthoritativeState = copyShipState(serverPlayer);
     const previousPrediction = this.localState;
     const acknowledged = serverPlayer.ackSeq;
-    this.inputHistory = this.inputHistory.filter((input) => !isAcknowledged(input.seq, acknowledged));
-    let correctedState = copyShipState(serverPlayer);
-    if (this.prediction) {
-      for (const input of this.inputHistory) correctedState = integrate(correctedState, input, FIXED_DT);
+    let pendingCount = 0;
+    for (const input of this.inputHistory) {
+      if (isInputAcknowledged(input.seq, acknowledged)) continue;
+      this.inputHistory[pendingCount] = input;
+      pendingCount += 1;
     }
+    this.inputHistory.length = pendingCount; // Прибираємо підтверджений префікс без нового масиву filter().
+    const serverState = copyShipState(serverPlayer);
+    const correctedState = this.prediction ? reconcilePrediction(serverState, this.inputHistory) : serverState;
 
     if (previousPrediction && this.prediction) {
       const previousVisualX = wrapCoordinate(previousPrediction.x + this.correctionX, ARENA_WIDTH);
@@ -293,13 +347,20 @@ export class NetworkGame {
     }
     this.localState = correctedState;
 
-    const authoritativeBulletIds = new Set(snapshot.bullets.map((bullet) => bullet.id));
     for (const [id, bullet] of this.predictedBullets) {
-      if (authoritativeBulletIds.has(id) || (bullet.seq !== undefined && isAcknowledged(bullet.seq, acknowledged))) {
+      let confirmed = false;
+      for (const serverBullet of snapshot.bullets) {
+        if (serverBullet.id === id) {
+          confirmed = true;
+          break;
+        }
+      }
+      if (confirmed || (bullet.seq !== undefined && isInputAcknowledged(bullet.seq, acknowledged))) {
         this.predictedBullets.delete(id);
       }
     }
     this.graph.pendingInputCount = this.inputHistory.length;
+    markProfileEnd('reconcile'); // Завершуємо User Timing після повторного програвання непідтверджених input.
   }
 
   // Малюємо серверний світ, свій прогноз і панель мережевих показників.
@@ -318,52 +379,94 @@ export class NetworkGame {
     this.#drawPredictedShip(ctx);
     this.#drawPredictedBullets(ctx);
     ctx.restore();
-    this.graph.draw(ctx);
+    this.graph.draw(ctx, !renderAllocationBaseline); // Baseline малює мережевий текст напряму, фінальна версія використовує кеш.
   }
 
   // Малюємо статичні зірки, щоб арена мала впізнаваний фон.
   #drawArena(ctx: CanvasRenderingContext2D): void {
+    if (renderAllocationBaseline || typeof document === 'undefined') {
+      ctx.fillStyle = 'rgba(255,255,255,0.28)'; // Baseline та нестандартний runtime малюють початковий варіант.
+      for (let index = 0; index < 90; index += 1)
+        ctx.fillRect((index * 137) % ARENA_WIDTH, (index * 83) % ARENA_HEIGHT, 2, 2); // Зберігаємо звичний малюнок зірок.
+      return; // Повертаємося до повного шляху лише в контрольному режимі.
+    } // Завершуємо baseline.
+    if (!this.#arenaCanvas) {
+      const field = document.createElement('canvas'); // Створюємо невелике offscreen-полотно один раз.
+      field.width = ARENA_WIDTH; // Кеш має ті самі координати, що й серверна арена.
+      field.height = ARENA_HEIGHT; // Кеш не залежить від розміру вікна браузера.
+      const fieldContext = field.getContext('2d'); // Готуємо контекст лише для створення фону.
+      if (fieldContext) {
+        fieldContext.fillStyle = 'rgba(255,255,255,0.28)'; // Зберігаємо попередній колір зірок.
+        for (let index = 0; index < 90; index += 1)
+          fieldContext.fillRect((index * 137) % ARENA_WIDTH, (index * 83) % ARENA_HEIGHT, 2, 2); // Малюємо сталі точки один раз.
+        this.#arenaCanvas = field; // Залишаємо заповнений bitmap для наступних кадрів.
+      } // Завершуємо заповнення кешу.
+    } // Створюємо фон тільки перед першим кадром.
+    if (this.#arenaCanvas) {
+      ctx.drawImage(this.#arenaCanvas, 0, 0); // Один blit замінює дев'яносто fillRect викликів.
+      return; // Зоряне поле вже намальоване.
+    } // Завершуємо cached path.
     ctx.fillStyle = 'rgba(255,255,255,0.28)';
-    for (let index = 0; index < 90; index += 1) {
-      ctx.fillRect((index * 137) % ARENA_WIDTH, (index * 83) % ARENA_HEIGHT, 2, 2);
-    }
+    for (let index = 0; index < 90; index += 1)
+      ctx.fillRect((index * 137) % ARENA_WIDTH, (index * 83) % ARENA_HEIGHT, 2, 2); // Якщо canvas недоступний, лишаємо старий рендер.
   }
 
   // Малюємо астероїди з серверного знімка, а не створюємо окремі локальні камені.
   #drawAsteroids(ctx: CanvasRenderingContext2D): void {
     const pair = this.#interpolationPair();
     if (!pair) return;
-    const nextAsteroids = new Map(pair.second.snapshot.asteroids?.map((asteroid) => [asteroid.id, asteroid]) ?? []);
-    for (const previous of pair.first.snapshot.asteroids ?? []) {
-      const next = nextAsteroids.get(previous.id) ?? previous;
-      const asteroid = {
-        ...previous,
-        x: previous.x + (next.x - previous.x) * pair.alpha,
-        y: previous.y + (next.y - previous.y) * pair.alpha,
-      };
-      const image = sprites.asteroid;
-      if (image) {
-        drawSprite(ctx, image, asteroid.x, asteroid.y, asteroid.radius * 2.4, asteroid.radius * 2.4, 0, {
-          x: 0,
-          y: 0,
-          w: image.width,
-          h: image.height,
-        }); // Малюємо завантажену текстуру астероїда, як у локальному World.
-      } else {
-        ctx.beginPath();
-        ctx.arc(asteroid.x, asteroid.y, asteroid.radius, 0, Math.PI * 2);
-        ctx.strokeStyle = '#aaa';
-        ctx.stroke();
-      } // Запасне коло видно лише тоді, коли файл спрайта недоступний.
-      if (asteroid.homing) {
-        ctx.beginPath();
-        ctx.arc(asteroid.x, asteroid.y, asteroid.radius + 4, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255, 140, 66, 0.65)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      } // Помаранчева обводка показує самонавідну перешкоду.
+    const previousAsteroids = pair.first.snapshot.asteroids;
+    const nextAsteroids = pair.second.snapshot.asteroids;
+    if (renderAllocationBaseline) {
+      const byId = new Map(nextAsteroids.map((asteroid) => [asteroid.id, asteroid])); // Baseline створює Map і масиви для пошуку.
+      for (const previous of previousAsteroids) {
+        const next = byId.get(previous.id) ?? previous;
+        const asteroid = {
+          ...previous,
+          x: previous.x + (next.x - previous.x) * pair.alpha,
+          y: previous.y + (next.y - previous.y) * pair.alpha,
+        }; // Залишаємо старий тимчасовий об'єкт.
+        this.#drawAsteroid(ctx, asteroid.x, asteroid.y, asteroid.radius, asteroid.homing); // Малюємо його тим самим способом.
+      }
+      return;
+    }
+    for (const previous of previousAsteroids) {
+      let next = previous;
+      for (const candidate of nextAsteroids) {
+        if (candidate.id === previous.id) {
+          next = candidate;
+          break;
+        }
+      }
+      const x = previous.x + (next.x - previous.x) * pair.alpha;
+      const y = previous.y + (next.y - previous.y) * pair.alpha;
+      this.#drawAsteroid(ctx, x, y, previous.radius, previous.homing); // Пошук по короткому списку не створює Map або сутність.
     }
   }
+
+  // Малюємо астероїд за скалярами, не збираючи новий об'єкт на кожен кадр.
+  #drawAsteroid(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number, homing: boolean): void {
+    const image = sprites.asteroid;
+    if (image) {
+      const frame = fullSpriteFrame(image); // Source rectangle стабільний для всієї текстури.
+      const size = radius * 2.4;
+      if (renderAllocationBaseline)
+        drawSprite(ctx, image, x, y, size, size, 0, frame); // Baseline лишає початкові зайві перетворення canvas.
+      else ctx.drawImage(image, frame.x, frame.y, frame.w, frame.h, x - size / 2, y - size / 2, size, size); // Нульовий поворот не потребує окремих save/translate/rotate.
+    } else {
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = '#aaa';
+      ctx.stroke();
+    } // Запасне коло видно лише тоді, коли файл спрайта недоступний.
+    if (homing) {
+      ctx.beginPath();
+      ctx.arc(x, y, radius + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 140, 66, 0.65)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    } // Помаранчева обводка показує самонавідну перешкоду.
+  } // Завершуємо малювання одного астероїда.
 
   // Малюємо аптечки тим самим зеленим знаком, що й локальна гра.
   #drawPickups(ctx: CanvasRenderingContext2D): void {
@@ -382,21 +485,48 @@ export class NetworkGame {
   #drawRemoteShips(ctx: CanvasRenderingContext2D): void {
     const pair = this.#interpolationPair();
     if (!pair) return;
-    const firstPlayers = new Map(pair.first.snapshot.players.map((player) => [player.id, player]));
-    const secondPlayers = new Map(pair.second.snapshot.players.map((player) => [player.id, player]));
-    for (const [id, second] of secondPlayers) {
-      if (id === this.playerId || second.hp <= 0) continue;
-      const previous = firstPlayers.get(id);
-      const first = !previous || previous.hp <= 0 ? second : previous;
-      const x = wrapCoordinate(first.x + wrappedDelta(first.x, second.x, ARENA_WIDTH) * pair.alpha, ARENA_WIDTH);
-      const y = wrapCoordinate(first.y + wrappedDelta(first.y, second.y, ARENA_HEIGHT) * pair.alpha, ARENA_HEIGHT);
-      const angle = interpolateAngle(first.angle, second.angle, pair.alpha);
-      this.#drawShip(ctx, x, y, angle, second.name, second.hp, Math.hypot(second.vx, second.vy) > 10);
+    const firstPlayers = pair.first.snapshot.players;
+    const secondPlayers = pair.second.snapshot.players;
+    if (renderAllocationBaseline) {
+      const firstById = new Map(firstPlayers.map((player) => [player.id, player])); // Baseline повторює Map та масиви зі старого рендеру.
+      const secondById = new Map(secondPlayers.map((player) => [player.id, player])); // Створюємо такі самі тимчасові структури, як до оптимізації.
+      for (const [id, second] of secondById) {
+        this.#drawRemoteShip(ctx, second, firstById.get(id), pair.alpha); // Малюємо baseline з попереднім Map-пошуком.
+      }
+      return;
+    }
+    for (const second of secondPlayers) {
+      let previous: (typeof firstPlayers)[number] | undefined;
+      for (const candidate of firstPlayers) {
+        if (candidate.id === second.id) {
+          previous = candidate;
+          break;
+        }
+      }
+      this.#drawRemoteShip(ctx, second, previous, pair.alpha); // Пошук лінійним циклом не виділяє Map у кожному кадрі.
     }
   }
 
+  // Малюємо один віддалений корабель для обох режимів порівняння.
+  #drawRemoteShip(
+    ctx: CanvasRenderingContext2D,
+    second: ShipEntity,
+    previous: ShipEntity | undefined,
+    alpha: number,
+  ): void {
+    if (second.id === this.playerId || second.hp <= 0) return; // Не дублюємо власний або знищений корабель.
+    const first = !previous || previous.hp <= 0 ? second : previous; // Після респауну починаємо інтерполяцію з нового стану.
+    const x = wrapCoordinate(first.x + wrappedDelta(first.x, second.x, ARENA_WIDTH) * alpha, ARENA_WIDTH);
+    const y = wrapCoordinate(first.y + wrappedDelta(first.y, second.y, ARENA_HEIGHT) * alpha, ARENA_HEIGHT);
+    const angle = interpolateAngle(first.angle, second.angle, alpha);
+    const isThrusting = renderAllocationBaseline
+      ? Math.hypot(second.vx, second.vy) > 10
+      : second.vx * second.vx + second.vy * second.vy > 100; // Квадрат порогу не викликає sqrt на кожного корабля у фінальному режимі.
+    this.#drawShip(ctx, x, y, angle, second.name, second.hp, isThrusting);
+  } // Завершуємо інтерпольоване малювання корабля.
+
   // Знаходимо два знімки, між якими лежить обраний час рендеру.
-  #interpolationPair(): { first: SnapshotEntry; second: SnapshotEntry; alpha: number } | null {
+  #interpolationPair(): InterpolationPair | null {
     const history = this.snapshotHistory;
     if (history.length === 0) return null;
     const earliest = history.at(0);
@@ -418,24 +548,41 @@ export class NetworkGame {
     }
     const duration = second.receivedAt - first.receivedAt;
     const alpha = duration > 0 ? Math.max(0, Math.min(1, (targetTime - first.receivedAt) / duration)) : 1;
-    return { first, second, alpha };
+    if (renderAllocationBaseline) return { first, second, alpha }; // Baseline повторює пару, що створювалась кожного кадру.
+    if (!this.#interpolationScratch)
+      this.#interpolationScratch = { first, second, alpha }; // Створюємо буфер лише після першого знімка.
+    else {
+      this.#interpolationScratch.first = first; // Перезаписуємо поточну ліву межу інтерполяції.
+      this.#interpolationScratch.second = second; // Перезаписуємо праву межу інтерполяції.
+      this.#interpolationScratch.alpha = alpha; // Оновлюємо коефіцієнт без нової пари.
+    }
+    return this.#interpolationScratch; // Віддаємо незмінний за адресою об'єкт до наступного кадру.
   }
 
   // Малюємо останній серверний набір куль, який уже прийшов у кімнату.
   #drawServerBullets(ctx: CanvasRenderingContext2D): void {
     const latest = this.snapshotHistory.at(-1)?.snapshot;
     if (!latest) return;
-    const localIds = new Set(this.predictedBullets.keys());
+    const localIds = renderAllocationBaseline ? new Set(this.predictedBullets.keys()) : null; // Відтворюємо старий тимчасовий Set лише для baseline.
     for (const bullet of latest.bullets) {
-      if (localIds.has(bullet.id)) continue;
-      const visualBullet =
-        bullet.ownerId === this.playerId
-          ? {
-              ...bullet,
-              x: wrapCoordinate(bullet.x + this.correctionX, ARENA_WIDTH),
-              y: wrapCoordinate(bullet.y + this.correctionY, ARENA_HEIGHT),
-            }
-          : bullet;
+      if (renderAllocationBaseline ? localIds?.has(bullet.id) : this.predictedBullets.has(bullet.id)) continue; // Оптимізований режим читає Map напряму.
+      let visualBullet: BulletRenderState = bullet; // Чужий постріл використовує серверний об'єкт напряму.
+      if (bullet.ownerId === this.playerId) {
+        if (renderAllocationBaseline) {
+          visualBullet = {
+            ...bullet,
+            x: wrapCoordinate(bullet.x + this.correctionX, ARENA_WIDTH),
+            y: wrapCoordinate(bullet.y + this.correctionY, ARENA_HEIGHT),
+          }; // Baseline копіює підтверджену кулю при кожному рендері.
+        } else {
+          this.#renderBulletMotion.x = wrapCoordinate(bullet.x + this.correctionX, ARENA_WIDTH); // Оновлюємо локальну корекцію без object spread.
+          this.#renderBulletMotion.y = wrapCoordinate(bullet.y + this.correctionY, ARENA_HEIGHT);
+          this.#renderBulletMotion.vx = bullet.vx;
+          this.#renderBulletMotion.vy = bullet.vy;
+          this.#renderBulletMotion.ttl = bullet.ttl;
+          visualBullet = this.#renderBulletMotion; // Передаємо той самий scratch у renderer.
+        }
+      }
       this.#drawBullet(ctx, visualBullet); // Власна підтверджена куля згладжується разом із кораблем.
     }
   }
@@ -443,24 +590,44 @@ export class NetworkGame {
   // Малюємо власний корабель одразу після локального input.
   #drawPredictedShip(ctx: CanvasRenderingContext2D): void {
     if (!this.localState || !this.playerId || this.localState.hp <= 0) return;
-    const visualState = integrate(this.localState, this.renderInput, this.accumulator);
+    const visualState = renderAllocationBaseline
+      ? integrate(this.localState, this.renderInput, this.accumulator)
+      : integrateInto(this.localState, this.renderInput, this.accumulator, this.#renderShipMotion); // Оптимізований preview пише в стабільний об'єкт.
     const x = wrapCoordinate(visualState.x + this.correctionX, ARENA_WIDTH);
     const y = wrapCoordinate(visualState.y + this.correctionY, ARENA_HEIGHT);
-    const name =
-      this.snapshotHistory.at(-1)?.snapshot.players.find((player) => player.id === this.playerId)?.name ?? 'Я';
+    let name = 'Я';
+    const players = this.snapshotHistory.at(-1)?.snapshot.players;
+    if (renderAllocationBaseline) {
+      name = players?.find((player) => player.id === this.playerId)?.name ?? 'Я'; // Baseline залишає попередній callback-пошук і його масиви.
+    } else if (players) {
+      for (const player of players) {
+        if (player.id === this.playerId) {
+          name = player.name;
+          break;
+        }
+      }
+    }
     this.#drawShip(ctx, x, y, visualState.angle + this.correctionAngle, name, this.localState.hp, this.thrusting);
   }
 
   // Показуємо власні кулі ще до відповіді сервера.
   #drawPredictedBullets(ctx: CanvasRenderingContext2D): void {
     for (const bullet of this.predictedBullets.values()) {
-      const visualBullet = integrateBullet(bullet, this.accumulator);
-      if (visualBullet.dead) continue;
-      this.#drawBullet(ctx, {
-        ...visualBullet,
-        x: wrapCoordinate(visualBullet.x + this.correctionX, ARENA_WIDTH),
-        y: wrapCoordinate(visualBullet.y + this.correctionY, ARENA_HEIGHT),
-      }); // Прогнозована куля лишається біля візуально скоригованого корабля.
+      if (renderAllocationBaseline) {
+        const visualBullet = integrateBullet(bullet, this.accumulator); // Baseline створює новий стан для кожної прогнозованої кулі.
+        if (visualBullet.dead) continue;
+        this.#drawBullet(ctx, {
+          ...visualBullet,
+          x: wrapCoordinate(visualBullet.x + this.correctionX, ARENA_WIDTH),
+          y: wrapCoordinate(visualBullet.y + this.correctionY, ARENA_HEIGHT),
+        }); // Старий шлях копіює об'єкт і накладає згладжування.
+        continue;
+      }
+      const visualBullet = integrateBulletInto(bullet, this.accumulator, this.#renderBulletMotion); // Інтегруємо постріл у повторно використану пам'ять.
+      if (visualBullet.ttl <= 0) continue; // TTL не впливає на рендер після завершення пострілу.
+      visualBullet.x = wrapCoordinate(visualBullet.x + this.correctionX, ARENA_WIDTH); // Коригуємо координати на місці.
+      visualBullet.y = wrapCoordinate(visualBullet.y + this.correctionY, ARENA_HEIGHT);
+      this.#drawBullet(ctx, visualBullet); // Куля не створює об'єкт на кожному кадрі.
     }
   }
 
@@ -479,7 +646,10 @@ export class NetworkGame {
     ctx.rotate(angle + Math.PI / 2); // Спрайт корабля в asset-файлі спрямований угору.
     const image = sprites.hero;
     if (image) {
-      drawSprite(ctx, image, 0, 0, 45, 45, 0, { x: 0, y: 0, w: image.width, h: image.height });
+      const frame = fullSpriteFrame(image); // Source rectangle кешується між кораблями й кадрами.
+      if (renderAllocationBaseline)
+        drawSprite(ctx, image, 0, 0, 45, 45, 0, frame); // Baseline повторює початкове вкладене перетворення.
+      else ctx.drawImage(image, frame.x, frame.y, frame.w, frame.h, -22.5, -22.5, 45, 45); // Контекст уже повернутий, тому не дублюємо save/translate/rotate.
     } else {
       ctx.beginPath();
       ctx.moveTo(20, 0);
@@ -506,12 +676,12 @@ export class NetworkGame {
   }
 
   // Куля має той самий колір і масштаб незалежно від протоколу.
-  #drawBullet(ctx: CanvasRenderingContext2D, bullet: BulletEntity): void {
+  #drawBullet(ctx: CanvasRenderingContext2D, bullet: BulletRenderState): void {
     const image = sprites.bullets;
     if (image) {
       const frame = Math.floor((1.2 - bullet.ttl) * 12) % 4;
       const angle = Math.atan2(bullet.vy, bullet.vx);
-      drawSprite(ctx, image, bullet.x, bullet.y, 16, 16, angle, { x: frame * 32, y: 0, w: 32, h: 32 });
+      drawSprite(ctx, image, bullet.x, bullet.y, 16, 16, angle, bulletSpriteFrames[frame] ?? null);
     } else {
       ctx.beginPath();
       ctx.arc(bullet.x, bullet.y, 4, 0, Math.PI * 2);
@@ -525,27 +695,43 @@ export class NetworkGame {
     for (let index = 0; index < count; index += 1) {
       const angle = (index / count) * Math.PI * 2;
       const speed = 35 + ((index * 29) % 70);
-      this.effects.push({
-        x,
-        y,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        ttl: 0.55,
-      });
+      const effect = this.effectPool.pop() ?? { x: 0, y: 0, vx: 0, vy: 0, ttl: 0 }; // Беремо частинку з пулу або створюємо її один раз.
+      effect.x = x; // Перезаписуємо позицію повторно використаного ефекту.
+      effect.y = y; // Перезаписуємо вертикальну позицію.
+      effect.vx = Math.cos(angle) * speed; // Задаємо напрямок руху.
+      effect.vy = Math.sin(angle) * speed; // Задаємо вертикальну швидкість.
+      effect.ttl = 0.55; // Повертаємо початковий час життя.
+      this.effects.push(effect); // Додаємо підготовлений об'єкт у список малювання.
     }
   }
 
-  // Рухаємо й прибираємо декоративні частинки без впливу на серверну симуляцію.
+  // Рухаємо й прибираємо декоративні частинки без map/filter алокацій на кожному кадрі.
   #stepEffects(dt: number): void {
-    this.effects = this.effects
-      .map((effect) => ({
-        ...effect,
-        x: wrapCoordinate(effect.x + effect.vx * dt, ARENA_WIDTH),
-        y: wrapCoordinate(effect.y + effect.vy * dt, ARENA_HEIGHT),
-        ttl: effect.ttl - dt,
-      }))
-      .filter((effect) => effect.ttl > 0);
+    let index = 0; // Обходимо той самий масив, поки переміщуємо частинки.
+    while (index < this.effects.length) {
+      const effect = this.effects[index]; // Читаємо поточний ефект без створення копії.
+      if (!effect) {
+        index += 1; // Захищаємо noUncheckedIndexedAccess від відсутнього слота.
+        continue; // Продовжуємо обхід чинного масиву.
+      } // Завершуємо перевірку слота.
+      effect.x = wrapCoordinate(effect.x + effect.vx * dt, ARENA_WIDTH); // Оновлюємо координату на місці.
+      effect.y = wrapCoordinate(effect.y + effect.vy * dt, ARENA_HEIGHT); // Оновлюємо вертикальну координату на місці.
+      effect.ttl -= dt; // Відлічуємо час життя в фіксованому кроці.
+      if (effect.ttl > 0) {
+        index += 1; // Активна частинка лишається у тому самому індексі.
+        continue; // Переходимо до наступної частинки.
+      } // Завершуємо перевірку тривалості ефекту.
+      const last = this.effects.pop(); // Забираємо останню комірку без зсуву всього масиву.
+      if (last && last !== effect) this.effects[index] = last; // Переставляємо останню активну частинку на місце завершеної.
+      if (this.effectPool.length < 512) this.effectPool.push(effect); // Повертаємо об'єкт до обмеженого пулу.
+    } // Завершуємо оновлення всіх ефектів без додаткового масиву.
   }
+
+  // Повертаємо всі активні частинки до пулу перед новою мережевою сесією.
+  #clearEffects(): void {
+    for (const effect of this.effects) if (this.effectPool.length < 512) this.effectPool.push(effect); // Зберігаємо об'єкти в обмеженому сховищі.
+    this.effects.length = 0; // Очищаємо активний список без заміни його масиву.
+  } // Завершуємо очищення мережевих ефектів.
 
   // Малюємо частинки вибухів поверх текстурованих сутностей.
   #drawEffects(ctx: CanvasRenderingContext2D): void {

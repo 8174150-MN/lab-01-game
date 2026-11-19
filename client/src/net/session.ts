@@ -2,6 +2,7 @@
 import { createConnection } from './connection.js';
 import { NetworkSimulator } from '../netSim.js';
 import { deserializeSnapshot, serializeInput, type JoinedMessage, type ServerMessage } from '@dogfight/shared/protocol';
+import { markProfileEnd, markProfileStart } from '../diagnostics/performance.js'; // Вимірюємо витрати декодування лише за URL прапорцем.
 import type { InputCommand, Snapshot } from '@dogfight/shared/types';
 
 type NetworkOptions = {
@@ -62,7 +63,10 @@ export function startSession({
   connection.on('binary', (buffer) => {
     simulator.receive(buffer, () => {
       try {
-        onSnapshot?.(deserializeSnapshot(buffer));
+        markProfileStart('decode'); // Починаємо User Timing навколо декодера snapshot.
+        const snapshot = deserializeSnapshot(buffer); // Перевіряємо і декодуємо той самий пакет протоколу.
+        markProfileEnd('decode'); // DevTools бачить час декодування в окремій доріжці.
+        onSnapshot?.(snapshot); // Передаємо перевірений знімок у мережеву симуляцію.
       } catch (error: unknown) {
         onStatus?.('protocol-error', error instanceof Error ? error.message : 'invalid binary snapshot');
       }

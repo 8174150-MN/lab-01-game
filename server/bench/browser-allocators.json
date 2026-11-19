@@ -1,0 +1,14 @@
+[
+  {
+    "functionName": "draw http://127.0.0.1:4177/src/netgraph.ts",
+    "sampledBytes": 114704
+  },
+  {
+    "functionName": "recordFrame http://127.0.0.1:4177/src/diagnostics/performance.ts",
+    "sampledBytes": 32772
+  },
+  {
+    "functionName": "(root) ",
+    "sampledBytes": 0
+  }
+]

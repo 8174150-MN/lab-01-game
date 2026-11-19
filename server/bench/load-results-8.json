@@ -1,0 +1,19 @@
+[
+  {
+    "clients": 8,
+    "durationMs": 60000,
+    "tickP50Ms": 0.13230000436306,
+    "tickP95Ms": 0.30869999527931213,
+    "tickP99Ms": 0.9312000274658203,
+    "tickMaxMs": 1.951300024986267,
+    "ticksOver33Ms": 0,
+    "snapshotGapP95Ms": 69.48910000000251,
+    "eventLoopUtilization": 0.1601,
+    "rssStartMiB": 67.7,
+    "rssEndMiB": 84.6,
+    "rssPeakMiB": 84.6,
+    "uploadBytesPerSecond": 1680,
+    "downloadBytesPerSecond": 383193,
+    "totalBytesPerSecond": 384873
+  }
+]

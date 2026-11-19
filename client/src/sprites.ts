@@ -18,6 +18,17 @@ export interface SpriteFrame {
   readonly w: number;
   readonly h: number;
 }
+const fullImageFrames = new WeakMap<SpriteImage, SpriteFrame>(); // Повторно використовуємо повний source rectangle одного спрайта.
+
+// Повертаємо стабільну рамку цілої картинки без об'єкта на кожен кадр.
+export function fullSpriteFrame(image: SpriteImage): SpriteFrame {
+  const cached = fullImageFrames.get(image); // Перевіряємо рамку, створену під час першого малювання.
+  if (cached) return cached; // Усі наступні кадри отримують ту саму незмінну структуру.
+  const frame = { x: 0, y: 0, w: image.width, h: image.height }; // Формуємо координати всієї картинки один раз.
+  fullImageFrames.set(image, frame); // WeakMap не подовжує життя вже відкинутих зображень.
+  return frame; // Передаємо рамку drawSprite без додаткових алокацій.
+} // Завершуємо отримання кешованої рамки.
+
 export function drawSprite(
   ctx: CanvasRenderingContext2D,
   img: SpriteImage,

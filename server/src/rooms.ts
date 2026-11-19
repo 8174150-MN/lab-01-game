@@ -2,6 +2,7 @@
 import { randomInt, randomUUID } from 'node:crypto'; // Сервер створює ID та стартовий seed матчу.
 import { EventEmitter } from 'node:events'; // Події Room відокремлюють membership від журналу й HTTP.
 import type { WebSocket } from 'ws';
+import { Bot, type PlayerInput } from './bots.js'; // Серверний AI повертає ті самі команди, що й живий гравець.
 import { performance } from 'node:perf_hooks'; // Монотонний годинник планує серверні кроки.
 import { config } from './config.js'; // Перевірені ліміти задають кількість кімнат і гравців.
 import { createMatchLogger } from './logger.js'; // Кожна кімната пише власний потік NDJSON.
@@ -41,6 +42,7 @@ export interface RoomPlayer {
   readonly id: EntityId;
   readonly name: string;
   readonly format: 'binary' | 'json';
+  readonly bot: boolean;
   state: MutableShipState;
   readonly inputQueue: InputCommand[];
   currentInput: InputCommand;
@@ -83,16 +85,25 @@ export interface Room {
   pickups: Map<EntityId, PickupEntity>;
   asteroidRespawns: number[];
   tickNumber: number;
+  stepDurations: Float32Array;
+  stepSampleCount: number;
+  stepSampleCursor: number;
+  lastStepDurationMs: number;
+  maxStepDurationMs: number;
   tickTimer: ReturnType<typeof setTimeout> | null;
   nextTickAt: number;
   lastSnapshotAt: number;
   bullets: Map<EntityId, BulletEntity>;
+  addBots(count: number): number;
+  getStepDurationSamples(): number[];
 }
 
 export interface RoomManager {
   readonly rooms: Map<EntityId, Room>;
   readonly maxRooms: number;
   closing: boolean;
+  getStepDurations(): number[];
+  addBots(roomId: string, count: number): number;
 }
 
 // Порівнюємо послідовності з урахуванням можливого переходу через 2^32.
@@ -112,6 +123,13 @@ function segmentHitsCircle(startX: number, startY: number, moveX: number, moveY:
 }
 
 export class Room extends EventEmitter<RoomEvents> {
+  #botInputs = new Map<EntityId, PlayerInput>(); // Кожний бот має окрему стратегію керування.
+  stepDurations: Float32Array; // Фіксований кільцевий буфер не створює масив на кожному кроці.
+  stepSampleCount: number; // Кількість дійсних значень у кільцевому буфері.
+  stepSampleCursor: number; // Наступне місце запису в буфері.
+  lastStepDurationMs: number; // Останній час серверного stepSimulation.
+  maxStepDurationMs: number; // Найбільший замір цього матчу.
+
   // Створюємо порожню кімнату та її журнал матчу.
   constructor(id: EntityId, name: string) {
     super(); // Спершу ініціалізуємо EventEmitter, а тоді реєструємо слухачі.
@@ -131,6 +149,11 @@ export class Room extends EventEmitter<RoomEvents> {
     this.pickups = new Map(); // Сервер зберігає бонуси та передає їх у кожному знімку.
     this.asteroidRespawns = []; // Таймери повертають знищені астероїди у світ.
     this.tickNumber = 0; // Номер кроку замінює залежність симуляції від настінного часу.
+    this.stepDurations = new Float32Array(512); // Зберігаємо останні 512 замірів без виділення об'єктів.
+    this.stepSampleCount = 0; // Буфер спочатку не містить вимірювань.
+    this.stepSampleCursor = 0; // Перший замір починається з нульової комірки.
+    this.lastStepDurationMs = 0; // До першого кроку час дорівнює нулю.
+    this.maxStepDurationMs = 0; // Максимум починається з нуля.
     this.tickTimer = null; // Один timeout планує наступний крок без setInterval.
     this.nextTickAt = 0; // Цільовий час наступного кроку за монотонним годинником.
     this.lastSnapshotAt = 0; // Обмежуємо розсилання під час наздоганяння до 30 знімків за секунду.
@@ -148,6 +171,7 @@ export class Room extends EventEmitter<RoomEvents> {
       id: asEntityId(randomUUID()),
       name: username,
       format,
+      bot: false,
       state: this.#createSpawnState(),
       inputQueue: [],
       currentInput: { seq: asSeq(0), gas: false, turn: 0, shoot: false } satisfies InputCommand,
@@ -172,6 +196,37 @@ export class Room extends EventEmitter<RoomEvents> {
   } // Завершуємо вхід до кімнати.
 
   // Додаємо перевірену команду до черги саме того гравця, якому належить сокет.
+  // Додаємо AI-пілотів, які керують кораблями через звичайні команди input.
+  addBots(count: number): number {
+    const available = Math.max(0, this.maxPlayers - this.players.size); // Не перевищуємо місткість кімнати.
+    const amount = Math.min(count, available); // Створюємо лише стільки ботів, скільки є вільних місць.
+    for (let index = 0; index < amount; index += 1) {
+      const id = asEntityId(randomUUID()); // Генеруємо звичайний серверний id сутності.
+      const player: RoomPlayer = {
+        id,
+        name: 'Bot ' + (this.#botInputs.size + 1),
+        format: 'binary',
+        bot: true,
+        state: this.#createSpawnState(),
+        inputQueue: [],
+        currentInput: { seq: asSeq(0), gas: false, turn: 0, shoot: false },
+        lastQueuedSeq: asSeq(0),
+        lastShotSeq: asSeq(0),
+        fireCooldown: 0,
+        collisionCooldown: 0,
+      }; // Бот має ту саму форму сутності, що й мережевий гравець.
+      this.players.set(id, player); // Спільний цикл оновлює його як звичайний корабель.
+      this.#botInputs.set(id, new Bot()); // Вибір input ізольовано окремою AI-стратегією.
+      this.emit('join', player); // Повідомляємо кімнату про нового учасника.
+    } // Завершуємо створення запитаних ботів.
+    if (amount > 0) {
+      this.everJoined = true; // Кімната з ботами вважається запущеною.
+      this.broadcastRoster(); // Клієнти отримають ботів у звичайному списку гравців.
+      this.startSimulation(); // Запускаємо 30 Hz симуляцію для активної кімнати.
+    } // Не змінюємо стан кімнати, якщо вільних місць немає.
+    return amount; // Повертаємо фактичне число створених ботів.
+  } // Завершуємо створення AI пілотів.
+
   queueInput(socket: WebSocket, input: InputCommand): boolean {
     const player = this.clients.get(socket);
     if (!player || !isNewerSequence(input.seq, player.lastQueuedSeq)) return false;
@@ -210,7 +265,14 @@ export class Room extends EventEmitter<RoomEvents> {
       const now = performance.now();
       let steps = 0;
       while (this.nextTickAt <= now && steps < 5) {
+        const stepStartedAt = performance.now(); // Вимірюємо лише обчислення одного кроку симуляції.
         this.#stepSimulation(false);
+        const duration = performance.now() - stepStartedAt; // Зчитуємо тривалість до серіалізації snapshot.
+        this.lastStepDurationMs = duration; // Зберігаємо останній крок для діагностики.
+        this.maxStepDurationMs = Math.max(this.maxStepDurationMs, duration); // Оновлюємо максимум матчу.
+        this.stepDurations[this.stepSampleCursor] = duration; // Перезаписуємо комірку кільцевого буфера.
+        this.stepSampleCursor = (this.stepSampleCursor + 1) % this.stepDurations.length; // Переміщуємо індекс без алокації.
+        this.stepSampleCount = Math.min(this.stepSampleCount + 1, this.stepDurations.length); // Обмежуємо вікно останніми 512 кроками.
         this.nextTickAt += interval;
         steps += 1;
       }
@@ -224,9 +286,32 @@ export class Room extends EventEmitter<RoomEvents> {
     this.tickTimer.unref();
   }
 
+  // Копіюємо кільцевий буфер лише за окремим HTTP-запитом діагностики.
+  getStepDurationSamples(): number[] {
+    const samples = new Array<number>(this.stepSampleCount); // Виділяємо масив поза гарячим циклом сервера.
+    const first =
+      (this.stepSampleCursor - this.stepSampleCount + this.stepDurations.length) % this.stepDurations.length; // Знаходимо найстаріший запис.
+    for (let index = 0; index < this.stepSampleCount; index += 1) {
+      const ringIndex = (first + index) % this.stepDurations.length; // Переходимо через кінець кільцевого буфера.
+      samples[index] = this.stepDurations[ringIndex] ?? 0; // Повертаємо збережений час.
+    } // Завершуємо копіювання короткого вікна.
+    return samples; // Віддаємо копію для вимірювального скрипту.
+  } // Завершуємо читання вимірів серверного кроку.
+
   // Просуваємо всю кімнату на один фіксований крок у 1/30 секунди.
+  #updateBotInputs(): void {
+    const states = [...this.players.values()].map((player) => player.state); // Створюємо один компактний список кораблів на весь крок.
+    for (const [id, inputSource] of this.#botInputs) {
+      const player = this.players.get(id); // Знаходимо стан відповідного бота.
+      if (!player) continue; // Пропускаємо видалений корабель.
+      const nextSequence = asSeq((player.currentInput.seq + 1) >>> 0); // Послідовність бота лишається uint32, як у клієнта.
+      player.currentInput = inputSource.next(player.state, states, this.asteroids, nextSequence); // AI повертає input, а не координати.
+    } // Завершуємо підготовку команд усіх ботів.
+  } // Завершуємо генерацію server-side input.
+
   #stepSimulation(broadcast = true): void {
     this.tickNumber += 1;
+    this.#updateBotInputs(); // Боти й люди передають команди в ту саму фізику.
     const previousPlayers = new Map([...this.players.values()].map((player) => [player.id, player.state]));
     const previousAsteroids = new Map(this.asteroids.map((asteroid) => [asteroid.id, asteroid]));
     for (const player of this.players.values()) {
@@ -618,6 +703,22 @@ export class RoomManager {
     }
     return [...this.rooms.values()].map((room) => room.toJSON()); // Повертаємо звичайний масив, сумісний із JSON.
   } // Завершуємо формування списку кімнат.
+
+  // Додаємо серверні AI до кімнати за її ID або назвою.
+  addBots(roomId: string, count: number): number {
+    const room = this.getRoom(roomId); // Знаходимо кімнату тим самим способом, що й API.
+    if (!room) return -1; // Відрізняємо невідому кімнату від кімнати без місць.
+    return room.addBots(count); // Делегуємо перевірку місткості самої кімнаті.
+  } // Завершуємо додавання ботів через менеджер.
+
+  // Збираємо короткі вікна всіх кімнат для локального load benchmark.
+  getStepDurations(): number[] {
+    const samples: number[] = []; // Створюємо результат лише на запит /health.
+    for (const room of this.rooms.values()) {
+      for (const duration of room.getStepDurationSamples()) samples.push(duration); // Додаємо виміри кожної кімнати без розгортання великої кількості аргументів.
+    } // Завершуємо обхід кімнат.
+    return samples; // Повертаємо час обчислення кожного останнього кроку.
+  } // Завершуємо збір вимірів.
 
   // Дописуємо журнали всіх кімнат під час зупинки процесу.
   async close(): Promise<void> {

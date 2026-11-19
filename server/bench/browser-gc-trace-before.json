@@ -1,0 +1,150 @@
+{
+  "events": [
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1739,
+      "durationMs": 1.739
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1869,
+      "durationMs": 1.869
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1459,
+      "durationMs": 1.459
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1200,
+      "durationMs": 1.2
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 866,
+      "durationMs": 0.866
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1062,
+      "durationMs": 1.062
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 990,
+      "durationMs": 0.99
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 2000,
+      "durationMs": 2
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1096,
+      "durationMs": 1.096
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1881,
+      "durationMs": 1.881
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1015,
+      "durationMs": 1.015
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 4170,
+      "durationMs": 4.17
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1090,
+      "durationMs": 1.09
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1216,
+      "durationMs": 1.216
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 2097,
+      "durationMs": 2.097
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1110,
+      "durationMs": 1.11
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1337,
+      "durationMs": 1.337
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1112,
+      "durationMs": 1.112
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 839,
+      "durationMs": 0.839
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1433,
+      "durationMs": 1.433
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1522,
+      "durationMs": 1.522
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MajorGC",
+      "durationUs": 57201,
+      "durationMs": 57.201
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 2326,
+      "durationMs": 2.326
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MajorGC",
+      "durationUs": 18389,
+      "durationMs": 18.389
+    }
+  ],
+  "totalPauseMs": 109.02,
+  "maxPauseMs": 57.2
+}

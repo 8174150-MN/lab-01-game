@@ -2,9 +2,10 @@
 import { WebSocketServer } from 'ws'; // ws реалізує кадри RFC 6455, ping/pong і ліміт maxPayload.
 import type { WebSocket, RawData } from 'ws';
 import type { Server } from 'node:http';
-import { performance } from 'node:perf_hooks'; // Токен-бакет використовує монотонний годинник.
 import { config } from './config.js'; // Ліміти перевіряються один раз під час запуску.
+import { createRateLimiter } from './rateLimit.js'; // Токен-бакет перевіряється окремими тестами.
 import { CLOSE } from './protocol.js'; // Коди закриття лишаються серверною відповідальністю.
+import { HEARTBEAT_INTERVAL_MS, sendHeartbeat } from './heartbeat.js'; // Ping/pong логіку можна перевірити окремо фальшивим годинником.
 import { deserializeInput, parseClientMessage } from '@dogfight/shared/protocol'; // JSON та binary проходять спільну runtime-валідацію.
 import { ARENA_HEIGHT, ARENA_WIDTH, SIMULATION_HZ } from '@dogfight/shared/engine'; // Розмір арени й частота беруться зі спільної симуляції.
 import type { Room, RoomManager, RoomPlayer } from './rooms.js';
@@ -43,21 +44,7 @@ export function setupWebSocket(server: Server, roomManager: RoomManager): { clos
     perMessageDeflate: false,
   }); // Обмежуємо розмір кадру й вимикаємо витрати на стискання.
   const cleanupTasks = new Set(); // Відстежуємо асинхронне очищення кімнати та логу після close.
-  const heartbeat = setInterval(() => {
-    // Перевіряємо активність з'єднань із потрібним інтервалом у 15 секунд.
-    for (const socket of sockets.clients) {
-      // Перевіряємо кожне активне з'єднання.
-      if (socket.pingOutstanding) {
-        socket.missedPongs += 1; // Рахуємо пропуск лише після попереднього ping.
-        if (socket.missedPongs >= 2) {
-          socket.terminate();
-          continue;
-        } // Закриваємо з'єднання після двох поспіль пропущених pong.
-      } // Перевіряємо попередній запит heartbeat.
-      socket.pingOutstanding = true; // Позначаємо новий ping як такий, що очікує відповідь.
-      socket.ping(); // Відповідний pong скидає лічильник пропусків.
-    } // Завершуємо один обхід heartbeat.
-  }, 15000); // Запускаємо heartbeat кожні 15 секунд.
+  const heartbeat = setInterval(() => sendHeartbeat(sockets.clients), HEARTBEAT_INTERVAL_MS); // Перевіряємо pong-и та плануємо ping кожні п'ятнадцять секунд.
   heartbeat.unref(); // Дозволяємо закритому серверу завершитись без очікування таймера.
 
   server.on('upgrade', (request, networkSocket, head) => {
@@ -76,8 +63,7 @@ export function setupWebSocket(server: Server, roomManager: RoomManager): { clos
     socket.room = null; // До чату з'єднання мусить спершу приєднатися до кімнати.
     socket.player = null; // Сервер заповнить поле після коректного join.
     let joinTimer = setTimeout(() => socket.close(CLOSE.JOIN_TIMEOUT, 'join required within five seconds'), 5000); // Встановлюємо дедлайн входу.
-    let tokens = config.MAX_MESSAGES_PER_SECOND; // Починаємо з повного ліміту повідомлень на з'єднання.
-    let refillAt = performance.now(); // Запам'ятовуємо час останнього поповнення токенів.
+    const rateLimiter = createRateLimiter(config.MAX_MESSAGES_PER_SECOND, config.MAX_MESSAGES_PER_SECOND); // Для кожного сокета створюємо власний ліміт.
     socket.on('error', (error) => console.error('[WebSocket client]', error)); // Додаємо слухач помилок кожного сокета.
     socket.on('pong', () => {
       socket.missedPongs = 0;
@@ -91,18 +77,11 @@ export function setupWebSocket(server: Server, roomManager: RoomManager): { clos
         socket.close(1009, 'message too large');
         return;
       } // Закриваємо кадри, більші за заданий ліміт.
-      const now = performance.now(); // Беремо монотонний час для обмеження частоти.
-      tokens = Math.min(
-        config.MAX_MESSAGES_PER_SECOND,
-        tokens + ((now - refillAt) / 1000) * config.MAX_MESSAGES_PER_SECOND,
-      ); // Поступово поповнюємо токен-бакет.
-      refillAt = now; // Зберігаємо час останнього поповнення.
-      if (tokens < 1) {
+      if (!rateLimiter.consume()) {
         console.warn('[ws] rate limit');
         socket.close(CLOSE.RATE_LIMIT, 'rate limit exceeded');
         return;
-      } // Закриваємо клієнта, який перевищив токен-бакет.
-      tokens -= 1; // Витрачаємо один токен на прийняте повідомлення.
+      } // Відхиляємо повідомлення, якщо запас токенів вичерпаний.
       if (isBinary) {
         if (!socket.room) {
           socket.close(CLOSE.NOT_JOINED, 'join before input');

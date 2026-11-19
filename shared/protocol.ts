@@ -364,14 +364,19 @@ export function serializeSnapshot(snapshot: Snapshot): ArrayBuffer {
   return buffer;
 }
 
-function readString(view: DataView, offset: number): { readonly value: string; readonly offset: number } {
+const snapshotTextDecoder = new TextDecoder(); // Переиспользуємо стандартний декодер між мережевими знімками.
+
+function readStringLength(view: DataView, offset: number): number {
   if (offset >= view.byteLength) throw new RangeError('Пошкоджений рядок у знімку');
-  const length = view.getUint8(offset);
+  return view.getUint8(offset);
+}
+
+function readString(view: DataView, offset: number): string {
+  const length = readStringLength(view, offset);
   const start = offset + 1;
   const end = start + length;
   if (end > view.byteLength) throw new RangeError('Обрізаний рядок у знімку');
-  const value = new TextDecoder().decode(new Uint8Array(view.buffer, view.byteOffset + start, length));
-  return { value, offset: end };
+  return snapshotTextDecoder.decode(new Uint8Array(view.buffer, view.byteOffset + start, length));
 }
 
 function readFiniteFloat(view: DataView, offset: number): number {
@@ -401,15 +406,17 @@ export function deserializeSnapshot(data: unknown): Snapshot {
   let offset = 14;
 
   for (let index = 0; index < playerCount; index += 1) {
+    const idLength = readStringLength(view, offset);
     const id = readString(view, offset);
-    offset = id.offset;
+    offset += idLength + 1;
+    const nameLength = readStringLength(view, offset);
     const name = readString(view, offset);
-    offset = name.offset;
+    offset += nameLength + 1;
     if (offset + 27 > view.byteLength) throw new RangeError('Обрізаний стан корабля');
     players.push({
       kind: 'ship',
-      id: asEntityId(id.value),
-      name: name.value,
+      id: asEntityId(id),
+      name,
       x: readFiniteFloat(view, offset),
       y: readFiniteFloat(view, offset + 4),
       vx: readFiniteFloat(view, offset + 8),
@@ -424,15 +431,17 @@ export function deserializeSnapshot(data: unknown): Snapshot {
   }
 
   for (let index = 0; index < bulletCount; index += 1) {
+    const idLength = readStringLength(view, offset);
     const id = readString(view, offset);
-    offset = id.offset;
+    offset += idLength + 1;
+    const ownerIdLength = readStringLength(view, offset);
     const ownerId = readString(view, offset);
-    offset = ownerId.offset;
+    offset += ownerIdLength + 1;
     if (offset + 18 > view.byteLength) throw new RangeError('Обрізаний стан кулі');
     bullets.push({
       kind: 'bullet',
-      id: asEntityId(id.value),
-      ownerId: asEntityId(ownerId.value),
+      id: asEntityId(id),
+      ownerId: asEntityId(ownerId),
       x: readFiniteFloat(view, offset),
       y: readFiniteFloat(view, offset + 4),
       vx: readFiniteFloat(view, offset + 8),
@@ -443,14 +452,15 @@ export function deserializeSnapshot(data: unknown): Snapshot {
   }
 
   for (let index = 0; index < asteroidCount; index += 1) {
+    const idLength = readStringLength(view, offset);
     const id = readString(view, offset);
-    offset = id.offset;
+    offset += idLength + 1;
     if (offset + 21 > view.byteLength) throw new RangeError('Обрізаний стан астероїда');
     const flags = view.getUint8(offset);
     if ((flags & 0xfe) !== 0) throw new RangeError('Астероїд містить невідомі прапорці');
     asteroids.push({
       kind: 'asteroid',
-      id: asEntityId(id.value),
+      id: asEntityId(id),
       homing: Boolean(flags & 1),
       x: readFiniteFloat(view, offset + 1),
       y: readFiniteFloat(view, offset + 5),
@@ -462,12 +472,13 @@ export function deserializeSnapshot(data: unknown): Snapshot {
   }
 
   for (let index = 0; index < pickupCount; index += 1) {
+    const idLength = readStringLength(view, offset);
     const id = readString(view, offset);
-    offset = id.offset;
+    offset += idLength + 1;
     if (offset + 12 > view.byteLength) throw new RangeError('Обрізаний стан pickup');
     pickups.push({
       kind: 'pickup',
-      id: asEntityId(id.value),
+      id: asEntityId(id),
       x: readFiniteFloat(view, offset),
       y: readFiniteFloat(view, offset + 4),
       radius: readFiniteFloat(view, offset + 8),

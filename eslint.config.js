@@ -36,7 +36,7 @@ const readonly = (names) => Object.fromEntries(names.map((name) => [name, 'reado
 
 export default defineConfig([
   // Експортуємо спільні правила для клієнта, сервера та тестів.
-  { ignores: ['**/node_modules/**', '**/dist/**', '**/logs/**', 'package-lock.json'] }, // Не перевіряємо залежності та створені файли.
+  { ignores: ['**/node_modules/**', '**/dist/**', '**/logs/**', '**/coverage/**', 'package-lock.json'] }, // Не перевіряємо залежності та створені файли.
   {
     // Починаємо конфігурацію JavaScript-файлів.
     files: ['**/*.js'], // Включаємо вихідний код, конфігурацію та тести.

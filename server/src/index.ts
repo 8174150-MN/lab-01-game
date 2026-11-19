@@ -1,6 +1,7 @@
 // Точка входу Node спершу створює перевірені ресурси, а вже тоді приймає запити.
 import http from 'node:http'; // node:http віддає клієнтську збірку та обробляє API кімнат.
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { performance } from 'node:perf_hooks'; // Знімаємо завантаження event loop без сторонньої бібліотеки.
 import { mkdir } from 'node:fs/promises'; // Створюємо LOG_DIR перед відкриттям журналу кімнати.
 import { setTimeout as delay } from 'node:timers/promises'; // Навчальний маршрут імітує повільний асинхронний endpoint.
 import { config } from './config.js'; // Завантажуємо перевірені параметри середовища.
@@ -53,9 +54,63 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   } // Завершуємо попередній запит браузера без тіла відповіді.
 
   if (pathname === '/health' && request.method === 'GET') {
-    sendJson(response, 200, { status: 'ok', uptime: process.uptime(), rooms: rooms.rooms.size });
+    sendJson(response, 200, {
+      status: 'ok',
+      uptime: process.uptime(),
+      rooms: rooms.rooms.size,
+      stepDurationsMs: rooms.getStepDurations(),
+    }); // Load script reads server-side simulation timings while clients remain connected.
     return;
   } // Повертаємо стан процесу й кількість кімнат.
+
+  if (pathname === '/api/stats' && request.method === 'GET') {
+    const eventLoop = performance.eventLoopUtilization(); // Знімаємо накопичений час активного й вільного циклу Node.
+    sendJson(response, 200, {
+      rssBytes: process.memoryUsage().rss,
+      eventLoopActiveMs: eventLoop.active,
+      eventLoopIdleMs: eventLoop.idle,
+      eventLoopUtilization: eventLoop.utilization,
+    }); // Повертаємо метрики процесу для локального тесту навантаження.
+    return;
+  } // Завершуємо маршрут метрик сервера.
+
+  const botRoute = /^\/api\/rooms\/([^/]+)\/bots$/.exec(pathname); // Розпізнаємо окремий endpoint для серверних AI.
+  if (botRoute) {
+    if (request.method !== 'POST') {
+      response.setHeader('Allow', 'POST'); // Показуємо дозволений метод для цього маршруту.
+      sendJson(response, 405, { error: 'Method not allowed' });
+      return;
+    }
+    let roomId: string;
+    try {
+      roomId = decodeURIComponent(botRoute[1] ?? ''); // Декодуємо саме один компонент ідентифікатора.
+    } catch {
+      sendJson(response, 400, { error: 'Malformed room id' });
+      return;
+    }
+    const body = await readJsonBody(request, config.MAX_BODY_BYTES); // Валідуємо розмір JSON до створення ботів.
+    if (
+      !isRecord(body) ||
+      typeof body.count !== 'number' ||
+      !Number.isInteger(body.count) ||
+      body.count < 1 ||
+      body.count > 16
+    ) {
+      sendJson(response, 400, { error: 'count must be an integer from 1 to 16' });
+      return;
+    }
+    const added = rooms.addBots(roomId, body.count); // AI підключається до тієї ж серверної кімнати, що й люди.
+    if (added < 0) {
+      sendJson(response, 404, { error: 'Room not found' });
+      return;
+    }
+    if (added === 0) {
+      sendJson(response, 409, { error: 'Room is full' });
+      return;
+    }
+    sendJson(response, 201, { added, roomId }); // Повертаємо фактичну кількість створених ботів.
+    return;
+  }
 
   if (pathname === '/api/rooms') {
     // Обробляємо API перегляду й створення кімнат.

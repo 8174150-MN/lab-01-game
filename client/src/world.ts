@@ -1,9 +1,8 @@
 // World owns entities and coordinates updates, collisions, removal, and drawing.
-import { Explosion, Pickup } from './entities.js'; // Вибух зберігає короткоживучі частинки в одному об'єкті.
+import { Bullet, Explosion, Particle, Pickup } from './entities.js'; // World керує пулами куль і вибухів.
 import { findCircleCollisions } from './sim/collision.js'; // Геометрична перевірка ізольована від правил гри.
 import { wrapPosition } from './sim/arena.js'; // Арена окремо задає загортання за межами.
 import { emit } from './events.js'; // HUD і звук отримують факти про ігрові події.
-import { Vector2 } from './math.js'; // Створюємо нову позицію, адже координати вектора readonly.
 import type { GameEntity } from './entities.js';
 import type { ShipControls } from './sim/physics.js';
 import type { Explosion as ExplosionEntity } from './entities.js';
@@ -17,6 +16,8 @@ function isEntityKind<Kind extends GameEntity['kind']>(
 
 export class World {
   #entities = new Map<number, GameEntity>(); // Приватна Map зберігає сутності за їхніми ID.
+  #stepEntities: GameEntity[] = []; // Повторно використовуємо список сутностей поточного кроку.
+  #bulletPool: Bullet[] = []; // Повертаємо завершені кулі для наступних пострілів.
   width: number;
   height: number;
   score: number;
@@ -33,6 +34,21 @@ export class World {
     this.#entities.set(entity.id, entity); // ID є ключем і не змінюється протягом життя сутності.
     return entity; // Повертаємо сутність для зручного ланцюжка викликів.
   } // Завершуємо spawn.
+
+  // Створюємо кулю з пулу або виділяємо нову, якщо це перший постріл.
+  spawnBullet(
+    x: number,
+    y: number,
+    angle: number,
+    inheritedVelocity: Readonly<{ x: number; y: number }>,
+    ownerId: number,
+  ): Bullet {
+    const bullet = this.#bulletPool.pop(); // Забираємо екземпляр, який пережив попередній цикл.
+    const active = bullet
+      ? bullet.reset(x, y, angle, inheritedVelocity, ownerId)
+      : new Bullet(x, y, angle, inheritedVelocity, ownerId); // Оновлюємо пул або створюємо першу кулю.
+    return this.spawn(active); // Реєструємо активну кулю у звичайному сховищі світу.
+  } // Завершуємо створення pooled-кулі.
 
   // Позначаємо об'єкт мертвим, щоб sweep прибрав його наприкінці кроку.
   despawn(id: number): void {
@@ -65,7 +81,9 @@ export class World {
 
   // Оновлюємо фізику, обробляємо зіткнення та прибираємо мертвих.
   step(dt: number, input: ShipControls & { readonly firePressed?: boolean } = {}) {
-    const active = [...this.#entities.values()]; // Знімок не включає сутності, додані посеред цього кроку.
+    const active = this.#stepEntities; // Використовуємо той самий масив між кроками симуляції.
+    active.length = 0; // Очищаємо попередні посилання перед новим знімком.
+    for (const entity of this.#entities.values()) active.push(entity); // Нові сутності потраплять лише до наступного кроку.
     for (const entity of active) {
       // Кожну сутність оновлюємо рівно один раз за фіксований крок.
       if (entity.isDead) continue; // Пропускаємо сутності, позначені до початку кроку.
@@ -76,7 +94,7 @@ export class World {
       if (entity.kind !== 'asteroid' && entity.kind !== 'explosion') {
         // Астероїди відбиваються, решта ігрових тіл загортаються.
         const wrapped = wrapPosition(entity.pos, this.width, this.height, entity.radius); // Рахуємо нові координати за межами.
-        entity.pos = new Vector2(wrapped.x, wrapped.y); // Замінюємо позицію незмінним вектором.
+        entity.pos.set(wrapped.x, wrapped.y); // Перезаписуємо координати без створення нового Vector2.
       } // Завершуємо обробку меж арени.
       if (entity.kind === 'ship' && input.firePressed) entity.fire(this); // Стрільба викликає метод на кораблі, зберігаючи this.
     } // Завершуємо цикл оновлення сутностей.
@@ -84,20 +102,20 @@ export class World {
     const collisions = findCircleCollisions(active, (a, b) => this.#canCollide(a, b)); // Окрема система повертає пари контактів.
     for (const [a, b] of collisions) this.#resolveCollision(a, b); // World застосовує до пар ігрові правила.
     this.#sweep(); // Видаляємо всі сутності, позначені мертвими.
+    active.length = 0; // Звільняємо посилання на завершений набір сутностей.
   } // Завершуємо крок світу.
 
   // Вирішуємо, які типи сутностей можуть взаємодіяти.
   #canCollide(a: GameEntity, b: GameEntity): boolean {
-    const kinds = new Set([a.kind, b.kind]); // Нормалізуємо пару, незалежно від порядку Map.
-    if (kinds.has('bullet') && kinds.has('asteroid')) return true; // Кулі знищують астероїди.
+    if ((a.kind === 'bullet' && b.kind === 'asteroid') || (b.kind === 'bullet' && a.kind === 'asteroid')) return true; // Куля знищує астероїд у будь-якому порядку.
     if ((a.kind === 'bullet' && b.kind === 'ship') || (a.kind === 'ship' && b.kind === 'bullet')) {
       // Кулі можуть пошкодити інші кораблі.
       const bullet = a.kind === 'bullet' ? a : b.kind === 'bullet' ? b : null; // Знаходимо кулю в парі.
       const ship = a.kind === 'ship' ? a : b; // Знаходимо корабель у парі.
       return bullet !== null && ship !== null && bullet.ownerId !== ship.id; // Власна куля не вражає стрільця.
     } // Завершуємо перевірку кулі й корабля.
-    if (kinds.has('ship') && kinds.has('asteroid')) return true; // Астероїди пошкоджують корабель.
-    if (kinds.has('ship') && kinds.has('pickup')) return true; // Корабель може підібрати бонус.
+    if ((a.kind === 'ship' && b.kind === 'asteroid') || (b.kind === 'ship' && a.kind === 'asteroid')) return true; // Астероїди пошкоджують корабель.
+    if ((a.kind === 'ship' && b.kind === 'pickup') || (b.kind === 'ship' && a.kind === 'pickup')) return true; // Корабель може підібрати бонус.
     return false; // Решта пар не потребує колізій.
   } // Завершуємо фільтр пар.
 
@@ -156,7 +174,13 @@ export class World {
   #sweep(): void {
     for (const [id, entity] of this.#entities) {
       // Перебираємо пари ключ-значення Map.
-      if (entity.isDead) this.#entities.delete(id); // Видаляємо лише після завершення оновлень і колізій.
+      if (!entity.isDead) continue; // Активні сутності лишаються у світі.
+      this.#entities.delete(id); // Прибираємо мертву сутність після зіткнень.
+      if (entity.kind === 'bullet' && this.#bulletPool.length < 256) this.#bulletPool.push(entity); // Повертаємо кулю в обмежений пул.
+      if (entity.kind === 'explosion') {
+        for (const particle of entity.particles) Particle.release(particle); // Не губимо частинки, якщо вибух прибрали вручну.
+        entity.particles.length = 0; // Очищаємо дочірній масив після повернення його частинок.
+      } // Завершуємо повернення об'єктів ефекту.
     } // Завершуємо безпечне очищення.
   } // Завершуємо sweep.
 

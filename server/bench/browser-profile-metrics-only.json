@@ -1,0 +1,16 @@
+{
+  "durationSeconds": 30,
+  "frames": 1640,
+  "frameMs": {
+    "p50": 17.8,
+    "p95": 19.2,
+    "p99": 31.1
+  },
+  "gc": {
+    "supported": false,
+    "pauses": 0,
+    "totalPauseMs": 0
+  },
+  "bots": 8,
+  "note": "Frame-only run without CPU or heap sampling."
+}

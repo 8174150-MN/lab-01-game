@@ -1,0 +1,116 @@
+{
+  "events": [
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1082,
+      "durationMs": 1.082
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1582,
+      "durationMs": 1.582
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 878,
+      "durationMs": 0.878
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 744,
+      "durationMs": 0.744
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 952,
+      "durationMs": 0.952
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1101,
+      "durationMs": 1.101
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1473,
+      "durationMs": 1.473
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1090,
+      "durationMs": 1.09
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 942,
+      "durationMs": 0.942
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 2687,
+      "durationMs": 2.687
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 1302,
+      "durationMs": 1.302
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 948,
+      "durationMs": 0.948
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 719,
+      "durationMs": 0.719
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 895,
+      "durationMs": 0.895
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 891,
+      "durationMs": 0.891
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 825,
+      "durationMs": 0.825
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MinorGC",
+      "durationUs": 786,
+      "durationMs": 0.786
+    },
+    {
+      "category": "devtools.timeline,v8",
+      "name": "MajorGC",
+      "durationUs": 72372,
+      "durationMs": 72.372
+    }
+  ],
+  "majorGcs": 1,
+  "minorGcs": 17,
+  "totalPauseMs": 91.27,
+  "maxPauseMs": 72.37
+}

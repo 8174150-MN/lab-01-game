@@ -1,0 +1,35 @@
+{
+  "durationSeconds": 30,
+  "frames": 1761,
+  "frameMs": {
+    "p50": 16.6,
+    "p95": 17.7,
+    "p99": 19.9
+  },
+  "gc": {
+    "supported": false,
+    "pauses": 0,
+    "totalPauseMs": 0
+  },
+  "gcTrace": {
+    "events": 24,
+    "totalPauseMs": 109.02,
+    "maxPauseMs": 57.2
+  },
+  "bots": 8,
+  "topAllocators": [
+    {
+      "functionName": "draw http://127.0.0.1:4177/src/netgraph.ts",
+      "sampledBytes": 114704
+    },
+    {
+      "functionName": "deserializeSnapshot http://127.0.0.1:4177/@fs/C:/Users/MARGO/Desktop/%D1%81%D0%B5%D1%80%D0%B4%D1%86%D0%B5/lab-01-game/shared/protocol.ts",
+      "sampledBytes": 65592
+    },
+    {
+      "functionName": "(root) ",
+      "sampledBytes": 0
+    }
+  ],
+  "note": "Browser and machine dependent; one real 30-second run."
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "functionName": "drawImage ",
+    "selfTimeMs": 59.5
+  },
+  {
+    "functionName": "(anonymous) connection.ts",
+    "selfTimeMs": 53.34
+  },
+  {
+    "functionName": "setTimeout ",
+    "selfTimeMs": 46.51
+  }
+]

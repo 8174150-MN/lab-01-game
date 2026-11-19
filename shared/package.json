@@ -10,6 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test test/*.test.ts"
+    "test": "node --require ../test-preload.cjs --import tsx --test test/*.test.ts && vitest run --config vitest.config.ts",
+    "test:coverage": "vitest run --coverage --config vitest.config.ts"
   }
 }

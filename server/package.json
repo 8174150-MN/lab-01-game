@@ -5,8 +5,9 @@
   "scripts": {
     "dev": "node --watch --env-file-if-exists=.env --import tsx src/index.ts",
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
-    "test": "tsx --test test/*.test.ts",
+    "test": "node --require ../test-preload.cjs --import tsx --test test/*.test.ts && vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:loadbench": "tsc --noEmit -p tsconfig.loadbench.json",
     "bench:rss": "tsx bench/replay-backpressure.ts"
   },
   "dependencies": {

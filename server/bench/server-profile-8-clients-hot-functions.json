@@ -1,0 +1,14 @@
+[
+  {
+    "functionName": "encode · encoding",
+    "selfTimeMs": 1371.33
+  },
+  {
+    "functionName": "read",
+    "selfTimeMs": 1083.4
+  },
+  {
+    "functionName": "writev",
+    "selfTimeMs": 873.81
+  }
+]

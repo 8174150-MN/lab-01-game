@@ -8,6 +8,9 @@ export class NetGraph {
   lastSnapshotAt = 0;
   byteWindowStartedAt: number;
   byteWindowTotal = 0;
+  #cacheCanvas: HTMLCanvasElement | null = null; // Панель тексту рендериться в окремий маленький canvas.
+  #cacheContext: CanvasRenderingContext2D | null = null; // Контекст панелі створюється один раз для сесії.
+  #lastDrawAt = 0; // Час останнього оновлення тексту HUD.
   constructor() {
     this.rtt = 0;
     this.snapshotAge = 0;
@@ -43,20 +46,46 @@ export class NetGraph {
   }
 
   // Малюємо всі п'ять потрібних метрик поверх арени.
-  draw(ctx: CanvasRenderingContext2D): void {
+  draw(ctx: CanvasRenderingContext2D, useCache = true): void {
     const now = performance.now();
     this.snapshotAge = this.lastSnapshotAt ? now - this.lastSnapshotAt + this.rtt / 2 : 0;
-    ctx.save();
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
-    ctx.fillRect(10, 72, 285, 105);
-    ctx.fillStyle = '#7CFF8A';
-    ctx.font = '13px monospace';
-    ctx.fillText('Мережа', 20, 91);
-    ctx.fillText('RTT: ' + Math.round(this.rtt) + ' ms', 20, 109);
-    ctx.fillText('Вік знімка: ' + Math.round(this.snapshotAge) + ' ms', 20, 127);
-    ctx.fillText('Трафік: ' + this.bytesPerSec + ' байт/с', 20, 145);
-    ctx.fillText('Input у черзі: ' + this.pendingInputCount, 20, 163);
-    ctx.fillText('Поправка: ' + this.reconError.toFixed(1) + ' px', 20, 181);
-    ctx.restore();
+    if (!useCache) {
+      ctx.save(); // Baseline малює текст та фон одразу в основне полотно.
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+      ctx.fillRect(10, 72, 285, 105);
+      ctx.fillStyle = '#7CFF8A';
+      ctx.font = '13px monospace';
+      ctx.fillText('Мережа', 20, 91);
+      ctx.fillText('RTT: ' + Math.round(this.rtt) + ' ms', 20, 109);
+      ctx.fillText('Вік знімка: ' + Math.round(this.snapshotAge) + ' ms', 20, 127);
+      ctx.fillText('Трафік: ' + this.bytesPerSec + ' байт/с', 20, 145);
+      ctx.fillText('Input у черзі: ' + this.pendingInputCount, 20, 163);
+      ctx.fillText('Поправка: ' + this.reconError.toFixed(1) + ' px', 20, 181);
+      ctx.restore(); // Завершуємо контрольне малювання старої панелі.
+      return;
+    } // Завершуємо baseline до offscreen-кешу.
+    if (!this.#cacheCanvas) {
+      this.#cacheCanvas = document.createElement('canvas'); // Створюємо backing canvas лише один раз.
+      this.#cacheCanvas.width = 285; // Розмір панелі лишається у CSS-пікселях.
+      this.#cacheCanvas.height = 120; // Залишаємо місце під нижній текст за межею напівпрозорого фону.
+      this.#cacheContext = this.#cacheCanvas.getContext('2d'); // Зберігаємо окремий контекст для тексту.
+    } // Завершуємо початкове створення кешу.
+    const panel = this.#cacheContext; // Читаємо закешований контекст локально.
+    if (!panel) return; // Browser може відмовити в 2D контексті, гра тоді лишається активною.
+    if (now - this.#lastDrawAt >= 250 || this.#lastDrawAt === 0) {
+      panel.clearRect(0, 0, 285, 120); // Оновлюємо панель приблизно десять разів за секунду.
+      panel.fillStyle = 'rgba(0, 0, 0, 0.78)';
+      panel.fillRect(0, 0, 285, 105); // Фон готується в кеші, не в основному полотні гри.
+      panel.fillStyle = '#7CFF8A';
+      panel.font = '13px monospace';
+      panel.fillText('Мережа', 10, 19);
+      panel.fillText('RTT: ' + Math.round(this.rtt) + ' ms', 10, 37);
+      panel.fillText('Вік знімка: ' + Math.round(this.snapshotAge) + ' ms', 10, 55);
+      panel.fillText('Трафік: ' + this.bytesPerSec + ' байт/с', 10, 73);
+      panel.fillText('Input у черзі: ' + this.pendingInputCount, 10, 91);
+      panel.fillText('Поправка: ' + this.reconError.toFixed(1) + ' px', 10, 109);
+      this.#lastDrawAt = now; // Текстові мережеві числа достатньо оновлювати чотири рази за секунду.
+    } // Завершуємо повільне оновлення показників.
+    if (this.#cacheCanvas) ctx.drawImage(this.#cacheCanvas, 10, 72); // Решту кадрів малюємо готову панель одним викликом.
   }
 }

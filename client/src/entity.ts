@@ -1,5 +1,5 @@
 // Підключаємо векторні типи та інтерполяцію кута без залежності від браузерного DOM.
-import { Vector2 } from './math.js'; // Vector2 зберігає позицію та швидкість сутності.
+import { MutableVector2 } from './math.js'; // Повторно використовувані вектори не створюють сміття щокроку.
 import { interpolateAngle } from './sim/physics.js'; // Інтерполяція проходить межу 2π найкоротшим шляхом.
 import { steerTowardTarget } from './components.js'; // Компонент додає homing без нової гілки успадкування. // Функція обходить межу кута найкоротшим шляхом.
 
@@ -17,9 +17,9 @@ export interface HomingComponent {
 // Базовий клас усіх об'єктів гри.
 export class Entity {
   static #nextId = 1; // Приватний лічильник не можна змінити ззовні класу.
-  #id; // Приватне поле зберігає незмінний ID конкретної сутності.
-  pos: Vector2;
-  vel: Vector2;
+  #id: number; // Приватне поле зберігає ID поточного життя сутності.
+  pos: MutableVector2;
+  vel: MutableVector2;
   angle: number;
   readonly radius: number;
   readonly kind: EntityKind;
@@ -30,8 +30,8 @@ export class Entity {
   // Створюємо сутність із позицією, радіусом зіткнення та типом.
   constructor(x: number, y: number, radius: number, kind: EntityKind) {
     this.#id = Entity.#nextId++; // Видаємо ID і відразу збільшуємо приватний лічильник.
-    this.pos = new Vector2(x, y); // Позиція потрібна фізиці та системі зіткнень.
-    this.vel = new Vector2(); // Нова сутність починає без швидкості.
+    this.pos = new MutableVector2(x, y); // Позиція створюється один раз на об'єкт.
+    this.vel = new MutableVector2(); // Швидкість створюється один раз на об'єкт.
     this.angle = 0; // Кут потрібен кораблям та іншим напрямленим об'єктам.
     this.radius = radius; // Радіус використовується коловою системою зіткнень.
     this.kind = kind; // Тип дає World змогу вибирати сутності через ofKind.
@@ -43,6 +43,16 @@ export class Entity {
   get id() {
     return this.#id;
   } // Зовнішній код не може підмінити ідентифікатор.
+
+  // Видаємо новий ID і очищаємо стан об'єкта, який повернувся з пулу.
+  protected reactivate(x: number, y: number): void {
+    this.#id = Entity.#nextId++; // Пул не повторює ID попереднього життя сутності.
+    this.pos.set(x, y); // Переставляємо позицію в уже наявному векторі.
+    this.vel.set(0, 0); // Скидаємо стару швидкість у вже наявному векторі.
+    this.angle = 0; // Очищаємо попередній напрямок.
+    this.isDead = false; // Повертаємо об'єкт до активного стану.
+    this.previous = { x, y, angle: 0 }; // Перший кадр не інтерполюється зі старої позиції.
+  } // Завершуємо повторну активацію об'єкта.
 
   // Фіксуємо стан перед наступним кроком фізики.
   capturePrevious(): void {
@@ -65,7 +75,7 @@ export class Entity {
   // Рухаємо сутність на один фіксований крок.
   update(dt: number, _width?: number, _height?: number, _input?: import('./sim/physics.js').ShipControls): void {
     steerTowardTarget(this, dt); // Застосовуємо самонаведення, якщо його додали композицією.
-    this.pos = this.pos.add(this.vel.scale(dt)); // Переміщення залежить від часу, а не частоти рендеру.
+    this.pos.set(this.pos.x + this.vel.x * dt, this.pos.y + this.vel.y * dt); // Рухаємось без тимчасових Vector2.
   } // Завершуємо оновлення базової сутності.
 
   // Базовий render нічого не малює; дочірні сутності задають свій вигляд.

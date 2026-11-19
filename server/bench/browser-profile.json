@@ -1,0 +1,51 @@
+{
+  "durationSeconds": 30,
+  "frames": 1712,
+  "frameMs": {
+    "p50": 16.6,
+    "p95": 18,
+    "p99": 20
+  },
+  "gc": {
+    "supported": false,
+    "pauses": 0,
+    "totalPauseMs": 0
+  },
+  "gcTrace": {
+    "events": 18,
+    "majorGcs": 1,
+    "minorGcs": 17,
+    "totalPauseMs": 91.27,
+    "maxPauseMs": 72.37
+  },
+  "bots": 8,
+  "topAllocators": [
+    {
+      "functionName": "draw http://127.0.0.1:4177/src/netgraph.ts",
+      "sampledBytes": 114704
+    },
+    {
+      "functionName": "recordFrame http://127.0.0.1:4177/src/diagnostics/performance.ts",
+      "sampledBytes": 32772
+    },
+    {
+      "functionName": "(root) ",
+      "sampledBytes": 0
+    }
+  ],
+  "topSelfTime": [
+    {
+      "functionName": "drawImage ",
+      "selfTimeMs": 59.5
+    },
+    {
+      "functionName": "(anonymous) connection.ts",
+      "selfTimeMs": 53.34
+    },
+    {
+      "functionName": "setTimeout ",
+      "selfTimeMs": 46.51
+    }
+  ],
+  "note": "Browser and machine dependent; one real 30-second run."
+}

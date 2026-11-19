@@ -15,7 +15,9 @@ import { startSession } from './net/session.js'; // Підключає до кі
 import { NetworkGame } from './net/game.js'; // Передбачає власний рух і малює серверні знімки.
 import type { LobbyNetworkOptions, LobbyRoom } from './lobby.js';
 import type { Ship as LocalShip } from './entities.js';
+import type { Snapshot } from '@dogfight/shared/types'; // Типізуємо дані, які відкриває лише тестовий браузерний сценарій.
 import { isAssetManifest } from './utils/loader.js';
+import { markProfileEnd, markProfileStart, startPerformanceProbe } from './diagnostics/performance.js'; // Опційно вимірюємо кадри та GC лише під час лабораторного профілю.
 
 interface ArenaConfig {
   readonly asteroidCount: number;
@@ -107,8 +109,17 @@ let lobby: Lobby | null = null; // Lobby живе, поки гравець пе�
 let lobbyView: ReturnType<typeof createLobbyView> | null = null; // DOM-подання лобі має окремі команди show та hide.
 let session: ReturnType<typeof startSession> | null = null; // WebSocket-сесія відкривається після вибору кімнати.
 let networkGame: NetworkGame | null = null; // Мережева симуляція з'являється після входу до кімнати.
+declare global {
+  interface Window {
+    __lab7Snapshot?: () => Snapshot | null; // Діагностичний доступ існує лише за спеціальним URL-параметром.
+  }
+}
+if (new URLSearchParams(location.search).get('lab7-e2e') === '1') {
+  window.__lab7Snapshot = () => networkGame?.snapshotHistory.at(-1)?.snapshot ?? null; // E2E перевіряє authoritative snapshot з іншої вкладки.
+} // Звичайний запуск гри не публікує жодного test hook.
 let playing = false; // Прапорець вмикає симуляцію після натискання Join.
 let loadController: AbortController | null = null; // Контролер дозволяє скасувати поточне завантаження.
+let stopPerformanceProbe: (() => void) | null = null; // Зберігаємо команду зупинки діагностики під час виходу.
 let respawnTime = 0; // Таймер відродження корабля вимірюється в секундах.
 let asteroidTimer = 0; // Таймер періодичного створення перешкод.
 let defaultArena: ArenaConfig = { asteroidCount: 5 }; // Статичний arena.json задає значення за замовчуванням.
@@ -207,8 +218,16 @@ function render(alpha: number): void {
 
 const loop = createLoop({
   step: 1 / 60,
-  simulate,
-  render,
+  simulate: (dt) => {
+    markProfileStart('simulate'); // Позначаємо час фіксованого кроку симуляції.
+    simulate(dt); // Виконуємо ту саму фізику, що й без профайлера.
+    markProfileEnd('simulate'); // Записуємо тривалість кроку в DevTools.
+  },
+  render: (alpha) => {
+    markProfileStart('render'); // Позначаємо малювання кадру.
+    render(alpha); // Викликаємо існуючий Canvas renderer без змін.
+    markProfileEnd('render'); // Зберігаємо час малювання для flame chart.
+  },
   onStats: (stats) =>
     hud.setPerf(
       'Кроки/с: ' +
@@ -292,6 +311,7 @@ function joinGame({ room, name, arena, network }: JoinRequest): void {
   requiredElement('chatBox', HTMLElement).hidden = false; // Відкриваємо чат після входу.
   requiredElement('leaveGameBtn', HTMLButtonElement).hidden = false; // Показуємо вихід із кімнати.
   loop.start(); // Починаємо rAF лише після вибору кімнати.
+  if (new URLSearchParams(location.search).get('lab7-profile') === '1') stopPerformanceProbe = startPerformanceProbe(); // Параметр запускає пасивний 30-секундний збір кадрів і GC.
 } // Завершуємо запуск матчу.
 
 // Завантажуємо активи й після цього готуємо лобі.
@@ -394,6 +414,8 @@ requiredElement('cancelLoading', HTMLButtonElement).addEventListener('click', ()
 // Кнопка виходу закриває сокет і повертає гравця в список кімнат.
 requiredElement('leaveGameBtn', HTMLButtonElement).addEventListener('click', () => {
   loop.stop(); // Зупиняємо рендер гри.
+  stopPerformanceProbe?.(); // Зберігаємо короткий звіт, якщо гравець вийшов раніше 30 секунд.
+  stopPerformanceProbe = null; // Не зберігаємо застаріле посилання для наступного матчу.
   playing = false; // Вимикаємо ігровий стан.
   session?.leave(); // Закриваємо WebSocket і звільняємо кімнату на сервері.
   session = null; // Прибираємо застаріле посилання на сесію.

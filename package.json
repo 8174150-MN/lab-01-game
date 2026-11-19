@@ -14,20 +14,31 @@
     "dev:client": "npm run dev -w client",
     "dev:server": "npm run dev -w server",
     "build": "npm run build -w client",
-    "typecheck": "npm run typecheck -w shared && npm run typecheck -w client && npm run typecheck -w server",
+    "typecheck": "npm run typecheck -w shared && npm run typecheck -w client && npm run typecheck -w server && npm run typecheck:loadbench -w server",
     "test": "npm run test -w shared && npm run test -w client && npm run test -w server",
+    "test:e2e": "playwright test",
+    "bench:profile": "playwright test --config playwright.profile.config.ts",
+    "bench:flame": "node server/bench/render-cpuprofile.mjs",
+    "bench:flame:before": "node server/bench/render-cpuprofile.mjs ./browser-profile-before.cpuprofile ./browser-profile-before-flame.svg",
+    "coverage:shared": "npm run test:coverage -w shared",
+    "bench:load": "node --require ./test-preload.cjs --import tsx server/bench/load-clients.ts",
+    "bench:server-profile": "node --require ./test-preload.cjs --require ./server/bench/profile-preload.cjs --import tsx server/src/index.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "bench:rss": "tsx server/bench/replay-backpressure.ts"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@types/node": "^26.6.6",
     "@types/ws": "^8.18.2",
+    "@vitest/coverage-v8": "^5.1.1",
     "eslint": "^10.15.0",
+    "fast-check": "^4.10.3",
     "prettier": "^3.10.1",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
   },
   "dependencies": {
     "zod": "^4.6.7"
