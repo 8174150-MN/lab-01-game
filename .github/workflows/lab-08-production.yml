@@ -40,18 +40,25 @@ jobs:
           image_bytes=$(docker image inspect asteroids-game:lab-08 --format '{{.Size}}')
           echo "Production image size: ${image_bytes} bytes"
           test "$image_bytes" -lt 209715200
-      - name: Check health, readiness, metrics, PWA, and graceful Docker stop
+      - name: Start the production container
+        run: docker run -d --name asteroids-lab8 -p 3000:3000 -e ALLOWED_ORIGINS=http://localhost:3000 asteroids-game:lab-08
+      - name: Check readiness, health, metrics, and PWA files
         run: |
-          docker run -d --name asteroids-lab8 -p 3000:3000 -e ALLOWED_ORIGINS=http://localhost:3000 asteroids-game:lab-08
           for attempt in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3000/ready >/dev/null; then ready=1; break; fi
             sleep 1
           done
           test "${ready:-0}" -eq 1
-          curl -fsS http://127.0.0.1:3000/health
+          curl -fsS http://127.0.0.1:3000/health | node -e "let data=''; process.stdin.on('data', (chunk) => data += chunk); process.stdin.on('end', () => { const health = JSON.parse(data); if (health.status !== 'ok' || health.version !== 'ci' || health.gitSha !== process.env.GITHUB_SHA) process.exit(1); console.log('Health build stamp:', health.version, health.gitSha); });"
           curl -fsS http://127.0.0.1:3000/metrics
           curl -fsS http://127.0.0.1:3000/manifest.webmanifest | node -e "let data=''; process.stdin.on('data', (chunk) => data += chunk); process.stdin.on('end', () => { const manifest = JSON.parse(data); if (!manifest.icons?.some((icon) => icon.sizes === '192x192' && icon.type === 'image/png') || !manifest.icons?.some((icon) => icon.sizes === '512x512' && icon.type === 'image/png')) process.exit(1); console.log('PWA manifest:', manifest.name); });"
+          curl --fail --silent --show-error http://127.0.0.1:3000/pwa-icon-192.png --output /dev/null
+          curl --fail --silent --show-error http://127.0.0.1:3000/pwa-icon-512.png --output /dev/null
+      - name: Check graceful Docker stop
+        run: |
           node scripts/docker-stop-check.mjs asteroids-lab8
           exit_code=$(docker inspect asteroids-lab8 --format '{{.State.ExitCode}}')
           test "$exit_code" -eq 0
-          docker rm asteroids-lab8
+      - name: Remove the test container
+        if: always()
+        run: docker rm --force asteroids-lab8 || true
