@@ -25,11 +25,11 @@ export function createHud(el: HTMLElement | null) {
   if (!el) throw new Error('HUD element was not found');
   const element = el;
   // Усе, що показуємо, зберігаємо тут.
-  const state = { name: '', hp: 3, score: 0, perf: '' };
+  const state = { name: '', hp: 3, score: 0, perf: '', version: '' };
 
   // Перемальовує текст HUD із поточного стану.
   function render() {
-    element.innerText = `${state.name} | ${state.perf} | Життя: ${state.hp} | Рахунок: ${state.score}`;
+    element.innerText = `${state.name} | ${state.perf} | Життя: ${state.hp} | Рахунок: ${state.score}${state.version ? ' | Версія: ' + state.version : ''}`;
   }
 
   // Вибух: у деталях події приходить поточний рахунок.
@@ -66,6 +66,11 @@ export function createHud(el: HTMLElement | null) {
     // setPerf викликає ігровий цикл щокадру (текст про FPS).
     setPerf(text: string) {
       state.perf = text;
+      render();
+    },
+    // setVersion shows which immutable server build serves the current client.
+    setVersion(version: string) {
+      state.version = version;
       render();
     },
     // Мережева лабораторна встановлює авторитетні життя й рахунок із сервера.

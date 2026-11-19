@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 // Текстові змінні середовища перетворюємо на числа та перевіряємо їхні межі.
 const environmentSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.preprocess(
     (value: unknown) => (typeof value === 'string' && value.trim() !== '' ? Number(value) : value),
     z.number().int().min(0).max(65535).default(3000),
@@ -44,6 +45,43 @@ const environmentSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((value) => value === 'true'),
+  // Зберігаємо список дозволених сайтів як origin-значення без шляхів і query.
+  ALLOWED_ORIGINS: z
+    .string()
+    .default(
+      'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:4177,http://127.0.0.1:4177',
+    )
+    .transform((value) =>
+      value
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean),
+    )
+    .refine(
+      (origins) =>
+        origins.every((origin) => {
+          try {
+            const parsed = new URL(origin);
+            return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.origin === origin;
+          } catch {
+            return false;
+          }
+        }),
+      'ALLOWED_ORIGINS must be comma-separated http(s) origins without paths',
+    ),
+  // Обмежуємо кількість одночасних WebSocket на одну адресу.
+  MAX_CONNECTIONS_PER_IP: z.preprocess(
+    (value: unknown) => (typeof value === 'string' && value.trim() !== '' ? Number(value) : value),
+    z.number().int().min(1).max(1000).default(20),
+  ),
+  // Forwarded headers довіряємо лише тоді, коли сервер стоїть за відомим проксі.
+  TRUST_PROXY: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  BUILD_SHA: z.string().trim().min(1).max(64).default('dev'),
+  BUILD_VERSION: z.string().trim().min(1).max(64).default('dev'),
 });
 
 export type ServerEnvironment = z.infer<typeof environmentSchema>;
@@ -62,5 +100,5 @@ if (!parsedEnvironment.success) {
 export const config = Object.freeze({
   ...parsedEnvironment.data,
   LOG_DIR: path.resolve(parsedEnvironment.data.LOG_DIR),
-  DIST_DIR: path.resolve(import.meta.dirname, '../../client/dist'),
+  DIST_DIR: path.resolve(process.cwd(), 'client/dist'),
 }) satisfies ServerConfig;

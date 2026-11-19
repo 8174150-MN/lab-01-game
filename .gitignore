@@ -3,6 +3,7 @@ node_modules/
 logs/
 server/bench/server-profile-logs/
 client/dist/
+server/dist/
 coverage/
 **/coverage/
 test-results/

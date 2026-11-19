@@ -6,6 +6,7 @@ import { Bot, type PlayerInput } from './bots.js'; // Серверний AI по
 import { performance } from 'node:perf_hooks'; // Монотонний годинник планує серверні кроки.
 import { config } from './config.js'; // Перевірені ліміти задають кількість кімнат і гравців.
 import { createMatchLogger } from './logger.js'; // Кожна кімната пише власний потік NDJSON.
+import { recordTraffic } from './appMetrics.js'; // Рахуємо вихідні байти, не записуючи вміст чату чи стану.
 import {
   ARENA_HEIGHT,
   ARENA_WIDTH,
@@ -21,8 +22,8 @@ import {
   integrateBullet,
   nextRandom,
   wrappedDelta,
-} from '@dogfight/shared/engine'; // Сервер і клієнт використовують однакові правила руху.
-import { serializeSnapshot } from '@dogfight/shared/protocol'; // Бінарні знімки кодуються спільним DataView-протоколом.
+} from '../../shared/engine.js'; // Сервер і клієнт використовують однакові правила руху.
+import { serializeSnapshot } from '../../shared/protocol.js'; // Бінарні знімки кодуються спільним DataView-протоколом.
 import {
   asEntityId,
   asSeq,
@@ -36,7 +37,7 @@ import {
   type ShipEntity,
   type ShipState,
   type Snapshot,
-} from '@dogfight/shared/types'; // Межі сервера брендують ID та послідовності.
+} from '../../shared/types.js'; // Межі сервера брендують ID та послідовності.
 
 export interface RoomPlayer {
   readonly id: EntityId;
@@ -602,6 +603,7 @@ export class Room extends EventEmitter<RoomEvents> {
       socket.send(payload, (error) => {
         if (error) socket.terminate();
       });
+      recordTraffic('out', typeof payload === 'string' ? Buffer.byteLength(payload) : payload.byteLength); // Враховуємо знімки в метриках вихідного трафіку.
     }
   }
 
@@ -659,6 +661,7 @@ export class Room extends EventEmitter<RoomEvents> {
       socket.send(payload, (error) => {
         if (error) socket.terminate();
       }); // Завершуємо сокет, який не зміг прийняти вихідний кадр.
+      recordTraffic('out', Buffer.byteLength(payload)); // Рахуємо фактичний UTF-8 розмір для цього одержувача.
     } // Завершуємо розсилання активним клієнтам.
   } // Завершуємо broadcast.
 
@@ -689,7 +692,7 @@ export class RoomManager {
 
   // Створюємо кімнату, якщо не досягнуто заданого серверного ліміту.
   create(name: string, id: string = randomUUID()): Room | null {
-    if (this.rooms.size >= this.maxRooms) return null; // Відхиляємо запит до створення зайвих ресурсів.
+    if (this.closing || this.rooms.size >= this.maxRooms) return null; // Відхиляємо запит під час shutdown або після ліміту.
     const cleanName = String(name).trim(); // Нормалізуємо назву, яку бачить гравець.
     if (!cleanName || cleanName.length > 40) return null; // Вимагаємо коротке непорожнє ім'я кімнати.
     const room = new Room(asEntityId(id), cleanName); // Створюємо кімнату та її журнал.

@@ -13,7 +13,11 @@
   "scripts": {
     "dev:client": "npm run dev -w client",
     "dev:server": "npm run dev -w server",
-    "build": "npm run build -w client",
+    "build": "npm run build -w client && npm run build:server",
+    "build:server": "tsc --outDir server/dist --noEmit false -p server/tsconfig.json",
+    "start:production": "node server/dist/server/src/index.js",
+    "production:smoke": "node scripts/production-smoke.mjs",
+    "chaos:check": "node server/bench/chaos-check.mjs",
     "typecheck": "npm run typecheck -w shared && npm run typecheck -w client && npm run typecheck -w server && npm run typecheck:loadbench -w server",
     "test": "npm run test -w shared && npm run test -w client && npm run test -w server",
     "test:e2e": "playwright test",

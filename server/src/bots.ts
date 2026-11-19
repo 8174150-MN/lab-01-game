@@ -1,5 +1,5 @@
-import { ARENA_HEIGHT, ARENA_WIDTH, wrappedDelta } from '@dogfight/shared/engine'; // Користуємося тими самими межами арени, що й фізика гри.
-import type { AsteroidEntity, InputCommand, Seq, ShipState } from '@dogfight/shared/types'; // Бот отримує стан та повертає звичайну команду гравця.
+import { ARENA_HEIGHT, ARENA_WIDTH, wrappedDelta } from '../../shared/engine.js'; // Користуємося тими самими межами арени, що й фізика гри.
+import type { AsteroidEntity, InputCommand, Seq, ShipState } from '../../shared/types.js'; // Бот отримує стан та повертає звичайну команду гравця.
 
 export interface PlayerInput {
   next(ship: ShipState, opponents: readonly ShipState[], asteroids: readonly AsteroidEntity[], seq: Seq): InputCommand;

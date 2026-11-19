@@ -2,9 +2,11 @@
 import http from 'node:http'; // node:http віддає клієнтську збірку та обробляє API кімнат.
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { performance } from 'node:perf_hooks'; // Знімаємо завантаження event loop без сторонньої бібліотеки.
-import { mkdir } from 'node:fs/promises'; // Створюємо LOG_DIR перед відкриттям журналу кімнати.
+import { mkdir, stat } from 'node:fs/promises'; // Створюємо журнал і перевіряємо, що виробничий shell зібраний.
 import { setTimeout as delay } from 'node:timers/promises'; // Навчальний маршрут імітує повільний асинхронний endpoint.
 import { config } from './config.js'; // Завантажуємо перевірені параметри середовища.
+import { logger } from './appLogger.js'; // Пишемо runtime-події JSON-рядками у stdout.
+import { getTrafficMetrics } from './appMetrics.js'; // Віддаємо обмежене рухоме вікно мережевих лічильників.
 import { RoomManager } from './rooms.js'; // Керуємо учасниками кімнат і журналами матчів.
 import { setupWebSocket } from './wsServer.js'; // Під'єднуємо перевірений lifecycle WebSocket.
 import { serveStatic } from './static.js'; // Віддаємо зібрані файли клієнта з перевіркою шляху.
@@ -40,11 +42,34 @@ async function readJsonBody(request: IncomingMessage, limit: number): Promise<un
 
 await mkdir(config.LOG_DIR, { recursive: true }); // Створюємо папку журналів до відкриття кімнатних потоків.
 const rooms = new RoomManager(); // Створюємо початкову кімнату після створення папки логів.
+let ready = false; // Readiness стає true лише після старту HTTP listener.
+let stopping = false; // Один прапорець прибирає сервер із маршрутизації під час shutdown.
+let previousEventLoop = performance.eventLoopUtilization(); // База для виміру завантаження циклу між запитами /metrics.
+let staticShellReady = config.NODE_ENV !== 'production'; // У dev клієнтом керує Vite, у production потрібен client/dist.
+if (config.NODE_ENV === 'production') {
+  try {
+    staticShellReady = (await stat(config.DIST_DIR + '/index.html')).isFile(); // Не рекламуємо готовність без головної сторінки.
+  } catch (error: unknown) {
+    logger.error({ err: error, path: config.DIST_DIR }, 'production client shell is missing'); // Лишаємо процес живим, але readiness буде 503.
+  }
+}
+
+// Обчислюємо p99 за короткими зразками fixed-step симуляції.
+function percentile(values: readonly number[], fraction: number): number {
+  if (values.length === 0) return 0; // До першого кроку p99 дорівнює нулю.
+  const sorted = [...values].sort((left, right) => left - right); // Сортуємо лише за окремим HTTP-запитом, не в гарячому циклі.
+  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1); // Беремо nearest-rank percentile.
+  return Number((sorted[index] ?? 0).toFixed(3)); // Округлюємо значення у мілісекундах.
+}
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://' + (request.headers.host || 'localhost')); // Розбираємо шлях і query відносно стабільної адреси.
   const pathname = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, '') : url.pathname; // Прибираємо зайвий слеш у кінці шляху.
-  response.setHeader('Access-Control-Allow-Origin', '*'); // Дозволяємо локальний проксі Vite та браузерні досліди.
+  const origin = request.headers.origin;
+  if (typeof origin === 'string' && config.ALLOWED_ORIGINS.includes(origin)) {
+    response.setHeader('Access-Control-Allow-Origin', origin); // CORS дозволений лише сайтам із конфігурації.
+    response.setHeader('Vary', 'Origin'); // Кеші не змішують відповіді для різних origin.
+  }
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'); // Оголошуємо реалізовані HTTP-методи.
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type'); // Дозволяємо JSON-запити POST.
   if (request.method === 'OPTIONS') {
@@ -57,11 +82,49 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     sendJson(response, 200, {
       status: 'ok',
       uptime: process.uptime(),
+      version: config.BUILD_VERSION,
+      gitSha: config.BUILD_SHA,
       rooms: rooms.rooms.size,
       stepDurationsMs: rooms.getStepDurations(),
     }); // Load script reads server-side simulation timings while clients remain connected.
     return;
   } // Повертаємо стан процесу й кількість кімнат.
+
+  if (pathname === '/ready' && request.method === 'GET') {
+    const status = ready && !stopping ? 200 : 503; // Ready відрізняється від liveness під час запуску та shutdown.
+    sendJson(response, status, { status: status === 200 ? 'ready' : 'not_ready' });
+    return;
+  } // Проксі направляє нових гравців лише до готового процесу.
+
+  if (pathname === '/metrics' && request.method === 'GET') {
+    const traffic = getTrafficMetrics(); // Отримуємо швидкість кадрів та байтів за останні секунди.
+    const stepSamples: number[] = []; // Об'єднуємо невеликі кільцеві вибірки активних кімнат.
+    const tickDurationP99MsByRoom: Record<string, number> = {}; // Даємо chaos test порівняти іншу кімнату до і після атаки.
+    let connectedPlayers = 0; // Рахуємо людей і ботів у симуляції.
+    for (const room of rooms.rooms.values()) {
+      connectedPlayers += room.players.size;
+      const roomSamples = room.getStepDurationSamples();
+      stepSamples.push(...roomSamples);
+      tickDurationP99MsByRoom[room.id] = percentile(roomSamples, 0.99);
+    } // Збираємо дані тільки коли запитано metrics.
+    const eventLoop = performance.eventLoopUtilization(previousEventLoop); // Вимірюємо utilization з попереднього читання.
+    previousEventLoop = performance.eventLoopUtilization(); // Переносимо базову точку для наступного інтервалу.
+    sendJson(response, 200, {
+      connectedPlayers,
+      connectedClients: closeAll.getConnectedClients(),
+      rooms: rooms.rooms.size,
+      messagesInPerSecond: traffic.messagesInPerSecond,
+      messagesOutPerSecond: traffic.messagesOutPerSecond,
+      bytesInPerSecond: traffic.bytesInPerSecond,
+      bytesOutPerSecond: traffic.bytesOutPerSecond,
+      tickDurationP99Ms: percentile(stepSamples, 0.99),
+      tickDurationP99MsByRoom,
+      eventLoopUtilization: Number(eventLoop.utilization.toFixed(4)),
+      rssBytes: process.memoryUsage.rss(),
+      rejectedConnections: traffic.rejectedConnections,
+    }); // Віддаємо JSON-метрики без Prometheus залежності.
+    return;
+  } // Завершуємо endpoint метрик процесу.
 
   if (pathname === '/api/stats' && request.method === 'GET') {
     const eventLoop = performance.eventLoopUtilization(); // Знімаємо накопичений час активного й вільного циклу Node.
@@ -179,7 +242,7 @@ const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
     // Перетворюємо помилки з async handler на HTTP-відповідь.
     const status = error instanceof Error && 'status' in error && typeof error.status === 'number' ? error.status : 500; // Зберігаємо відомі коди помилок клієнта.
-    if (status === 500) console.error('[HTTP]', error); // Записуємо неочікувані серверні помилки разом зі стеком.
+    if (status === 500) logger.error({ err: error, method: request.method }, 'http request failed'); // Записуємо стек і метод без журналювання тіла запиту.
     if (response.headersSent) {
       response.destroy(error instanceof Error ? error : undefined);
       return;
@@ -191,40 +254,68 @@ const server = http.createServer((request, response) => {
 }); // Завершуємо створення HTTP-сервера.
 
 server.on('error', (error) => {
-  console.error('[HTTP server]', error);
+  logger.fatal({ err: error }, 'http server failed');
   process.exitCode = 1;
-}); // Слухаємо помилки EventEmitter HTTP-сервера.
-const { closeAll } = setupWebSocket(server, rooms); // Під'єднуємо upgrade /ws після створення HTTP-сервера.
+  logger.flush(() => process.exit(1));
+}); // Слухаємо помилки EventEmitter HTTP-сервера і не лишаємо процес у хибному стані.
+const closeAll = setupWebSocket(server, rooms); // Під'єднуємо upgrade /ws після створення HTTP-сервера.
 server.listen(config.PORT, config.HOST, () => {
+  ready = staticShellReady; // Готовність настає після bind і перевірки зібраного клієнта.
   const address = server.address();
   if (address && typeof address !== 'string')
-    console.log('Server listening on http://' + config.HOST + ':' + address.port);
+    logger.info({ host: config.HOST, port: address.port }, 'http server listening');
 }); // Починаємо слухати порт після налаштування маршрутів і кімнат.
 
-let stopping = false; // Захищаємо shutdown від повторного виклику двома сигналами.
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (stopping) return; // Ігноруємо повторний запит на завершення.
   stopping = true; // Блокуємо паралельний другий shutdown.
-  console.log('Received ' + signal + '; closing server'); // Записуємо, який системний сигнал почав зупинку.
+  ready = false; // Платформа перестає надсилати нові запити ще до закриття сокетів.
+  rooms.closing = true; // Не створюємо кімнати під час graceful shutdown.
+  logger.info({ signal }, 'graceful shutdown started'); // Пишемо причину завершення у структурованому форматі.
+  const deadline = setTimeout(() => {
+    logger.fatal({ signal }, 'graceful shutdown exceeded 9 seconds');
+    logger.flush(() => process.exit(1));
+  }, 9000); // Залишаємо запас до стандартного десятисекундного docker stop timeout.
   const httpClosed = new Promise((resolve) => server.close(resolve)); // Зупиняємо нові HTTP-запити й чекаємо активні.
   server.closeIdleConnections?.(); // Закриваємо неактивні keep-alive з'єднання.
-  await closeAll(); // Закриваємо WebSocket і чекаємо записи про вихід із кімнат.
-  server.closeAllConnections?.(); // Закриваємо решту HTTP-з'єднань після WebSocket.
-  await httpClosed; // Чекаємо повного закриття HTTP listener.
-  await rooms.close(); // Дописуємо потоки журналів усіх кімнат.
-  console.log('Logs flushed; shutdown complete'); // Повідомляємо, що журнали збережені перед виходом.
-  process.exitCode = 0; // Дозволяємо Node завершитися природно з успішним кодом.
+  try {
+    await closeAll.closeAll(); // Надсилаємо shutdown і close 1001, чекаємо вихід гравців.
+    server.closeAllConnections?.(); // Закриваємо решту HTTP-з'єднань після WebSocket.
+    await httpClosed; // Чекаємо повного закриття HTTP listener.
+    await rooms.close(); // Дописуємо потоки журналів усіх кімнат.
+    logger.info({ signal }, 'graceful shutdown complete'); // Записуємо подію до фінального flush.
+    clearTimeout(deadline); // Успішний shutdown завершився до жорсткого дедлайну.
+    logger.flush(() => process.exit(0)); // Node завершується лише після виходу JSON-логів у stdout.
+  } catch (error: unknown) {
+    logger.fatal({ err: error, signal }, 'graceful shutdown failed');
+    clearTimeout(deadline);
+    logger.flush(() => process.exit(1));
+  }
 } // Завершуємо graceful shutdown.
 
 process.on('SIGINT', () => {
   shutdown('SIGINT').catch((error) => {
-    console.error(error);
+    logger.fatal({ err: error, signal: 'SIGINT' }, 'shutdown handler failed');
     process.exitCode = 1;
   });
 }); // Обробляємо Ctrl+C і повідомляємо про помилки завершення.
 process.on('SIGTERM', () => {
   shutdown('SIGTERM').catch((error) => {
-    console.error(error);
+    logger.fatal({ err: error, signal: 'SIGTERM' }, 'shutdown handler failed');
     process.exitCode = 1;
   });
 }); // Обробляємо сигнал зупинки від менеджера служб.
+
+// Log fatal unknowns and let the process manager restart a clean process.
+function crash(error: unknown, event: 'uncaughtException' | 'unhandledRejection'): void {
+  logger.fatal({ err: error, event }, 'unhandled process error; exiting'); // Keep the stack and event name in structured logs.
+  ready = false; // Stop advertising readiness before the process exits.
+  const exitTimer = setTimeout(() => process.exit(1), 1000); // Do not wait indefinitely for a blocked log stream.
+  logger.flush(() => {
+    clearTimeout(exitTimer);
+    process.exit(1);
+  }); // Flush Pino before exiting with a failure code.
+}
+
+process.on('uncaughtException', (error: Error) => crash(error, 'uncaughtException')); // Unknown synchronous failures must terminate.
+process.on('unhandledRejection', (reason: unknown) => crash(reason, 'unhandledRejection')); // Unknown async failures must terminate too.

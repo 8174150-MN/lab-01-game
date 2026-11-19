@@ -168,6 +168,13 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   z
     .object({ v: z.literal(JSON_PROTOCOL_VERSION), type: z.literal('pong'), sentAt: z.number().finite().nonnegative() })
     .strict(),
+  z
+    .object({
+      v: z.literal(JSON_PROTOCOL_VERSION),
+      type: z.literal('shutdown'),
+      reason: z.string().min(1).max(160),
+    })
+    .strict(),
 ]);
 
 export type ServerMessage = z.infer<typeof serverMessageSchema>;
@@ -516,6 +523,7 @@ export const jsonCodec: SnapshotCodec<string> = {
       case 'roster':
       case 'chat':
       case 'pong':
+      case 'shutdown':
         throw new TypeError('Очікувався знімок світу');
       default: {
         const exhaustive: never = result.message;

@@ -99,7 +99,7 @@ async function createRoom(name: string): Promise<RoomInfo> {
 // Відкриваємо WebSocket-клієнта та приєднуємо його до заданої кімнати.
 function connectBot(room: RoomInfo, name: string): Promise<Bot> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(websocketUrl); // Підключаємося тим самим транспортом, що браузер.
+    const socket = new WebSocket(websocketUrl, { headers: { Origin: 'http://localhost:5173' } }); // Передаємо browser Origin, який перевіряє production handler.
     const bot: Bot = { socket, snapshotIntervals: [], lastSnapshotAt: 0, bytesReceived: 0, bytesSent: 0 }; // Готуємо таймстемпи й лічильники мережі.
     let joined = false; // Не запускаємо input до підтвердження join.
     const timeout = setTimeout(() => reject(new Error(name + ' did not join within five seconds')), 5000); // Обмежуємо очікування кімнати.

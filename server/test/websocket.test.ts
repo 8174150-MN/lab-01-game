@@ -16,7 +16,8 @@ function waitForType(socket, type) {
       socket.off('message', onMessage);
       reject(new Error('Timed out waiting for ' + type));
     }, 3000); // Bound a stalled test.
-    function onMessage(raw) {
+    function onMessage(raw, isBinary) {
+      if (isBinary) return; // Знімки можуть бути бінарними, а тут шукаємо саме JSON-подію.
       const message = JSON.parse(raw.toString());
       if (message.type !== type) return;
       clearTimeout(timer);
@@ -39,8 +40,9 @@ test('two clients join, receive rosters, and exchange chat', async (context) => 
   server.listen(0, '127.0.0.1'); // Ask the operating system for a free local port.
   await once(server, 'listening'); // Wait until the socket accepts connections.
   const address = server.address(); // Read the selected ephemeral port.
-  const first = new WebSocket('ws://127.0.0.1:' + address.port + '/ws'); // Connect the first player.
-  const second = new WebSocket('ws://127.0.0.1:' + address.port + '/ws'); // Connect the second player.
+  const options = { headers: { Origin: 'http://localhost:5173' } }; // Mimic a browser from the development origin allowlist.
+  const first = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', options); // Connect the first player.
+  const second = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', options); // Connect the second player.
   context.after(async () => {
     first.close();
     second.close();
@@ -72,7 +74,9 @@ test('unknown WebSocket message types close with the protocol error code', async
   const { closeAll } = setupWebSocket(server, manager); // Install message validation and lifecycle logic.
   server.listen(0, '127.0.0.1'); // Bind an ephemeral test port.
   await once(server, 'listening'); // Wait until the server is ready.
-  const socket = new WebSocket('ws://127.0.0.1:' + server.address().port + '/ws'); // Create one protocol test client.
+  const socket = new WebSocket('ws://127.0.0.1:' + server.address().port + '/ws', {
+    headers: { Origin: 'http://localhost:5173' },
+  }); // Create one protocol test client from an allowed web origin.
   context.after(async () => {
     socket.close();
     await closeAll();
@@ -85,3 +89,28 @@ test('unknown WebSocket message types close with the protocol error code', async
   const result = await closed; // Wait for the server's protocol close.
   assert.equal(result.code, 4002); // Unknown message types use the documented close code.
 }); // Finish unknown-type integration test.
+
+test('rejects a WebSocket handshake from an untrusted origin', async (context) => {
+  await mkdir(config.LOG_DIR, { recursive: true }); // Keep the test independent of previous server runs.
+  const manager = new RoomManager(); // Prepare ordinary room state for the production handler.
+  const server = http.createServer(); // Use a free local listener without starting the browser.
+  const { closeAll } = setupWebSocket(server, manager); // Register origin validation before handshake.
+  server.listen(0, '127.0.0.1'); // Ask the operating system for an ephemeral port.
+  await once(server, 'listening'); // Wait for the listener before creating the client.
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Test server did not get a TCP port');
+  const socket = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', {
+    headers: { Origin: 'https://untrusted.example' },
+  }); // A browser page from this address must not upgrade to WebSocket.
+  context.after(async () => {
+    socket.close();
+    await closeAll();
+    await new Promise((resolve) => server.close(resolve));
+    await manager.close();
+  }); // Release all sockets, listeners, and room logs.
+  const status = await new Promise<number>((resolve, reject) => {
+    socket.once('unexpected-response', (_request, response) => resolve(response.statusCode));
+    socket.once('error', reject);
+  }); // Capture the HTTP rejection before the WebSocket protocol opens.
+  assert.equal(status, 403); // An origin outside ALLOWED_ORIGINS is rejected before upgrade.
+}); // Finish origin validation test.

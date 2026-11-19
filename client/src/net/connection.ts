@@ -21,7 +21,7 @@ type OutgoingPayload =
   | ArrayBuffer
   | ArrayBufferView;
 type TrafficEvent = { readonly direction: 'in' | 'out'; readonly bytes: number };
-type ConnectionState = 'connecting' | 'open' | 'closed' | 'protocol-error' | 'socket-error';
+type ConnectionState = 'connecting' | 'open' | 'closed' | 'shutdown' | 'protocol-error' | 'socket-error';
 type MessageFor<Type extends ServerMessage['type']> = Extract<ServerMessage, { type: Type }>;
 type ConnectionEvents = {
   joined_success: MessageFor<'joined_success'>;
@@ -29,6 +29,7 @@ type ConnectionEvents = {
   chat: MessageFor<'chat'>;
   snapshot: MessageFor<'snapshot'>;
   pong: MessageFor<'pong'>;
+  shutdown: MessageFor<'shutdown'>;
   binary: ArrayBuffer;
   traffic: TrafficEvent;
 };
@@ -43,6 +44,7 @@ export function createConnection(url: string) {
     chat: new Set(),
     snapshot: new Set(),
     pong: new Set(),
+    shutdown: new Set(),
     binary: new Set(),
     traffic: new Set(),
   };
@@ -167,6 +169,15 @@ export function createConnection(url: string) {
         return;
       case 'pong':
         dispatch('pong', message);
+        return;
+      case 'shutdown':
+        closedByUser = true; // A planned server restart returns the player to the lobby.
+        hello = null; // Do not automatically rejoin the old match after this server comes back.
+        queue.length = 0; // Discard input and chat that belong to the ended match.
+        if (timer !== null) clearTimeout(timer); // Cancel a pending reconnect from an earlier close.
+        timer = null;
+        setStatus('shutdown', message.reason); // Show the server's clear restart notice in the lobby.
+        dispatch('shutdown', message);
         return;
       default: {
         const exhaustive: never = message;

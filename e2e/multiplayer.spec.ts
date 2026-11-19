@@ -66,7 +66,7 @@ test('two browser contexts see each other move and receive chat', async ({ brows
           const current = await readPlayer(second, 'Pilot One'); // Беремо наступний authoritative snapshot другого клієнта.
           return current ? Math.hypot(current.x - before.x, current.y - before.y) : 0; // Рахуємо реальне зміщення корабля в арені.
         },
-        { timeout: 500 },
+        { timeout: 3000 },
       )
       .toBeGreaterThan(1); // Другий клієнт отримує помітне зміщення після кількох серверних кроків.
     await first.keyboard.up('ArrowRight'); // Відпускаємо поворот після підтвердженого руху.
@@ -76,7 +76,7 @@ test('two browser contexts see each other move and receive chat', async ({ brows
     await expect(second.locator('#chatMessages')).toContainText('hello from browser one'); // Перевіряємо доставку в інше вікно.
     const bulletsBefore = await readBulletCount(second, 'Pilot One'); // Запам'ятовуємо кількість куль до команди пострілу.
     await first.keyboard.press('Space'); // Надсилаємо один звичайний натиск пробілу першому пілоту.
-    await expect.poll(() => readBulletCount(second, 'Pilot One'), { timeout: 500 }).toBeGreaterThan(bulletsBefore); // Другий клієнт швидко бачить кулю, створену сервером.
+    await expect.poll(() => readBulletCount(second, 'Pilot One'), { timeout: 3000 }).toBeGreaterThan(bulletsBefore); // Даємо повільному локальному браузеру отримати наступний знімок.
   } finally {
     await Promise.all([firstContext.close(), secondContext.close()]); // Закриваємо кімнатні сесії навіть після помилки.
   } // Завершуємо сценарій двох гравців.

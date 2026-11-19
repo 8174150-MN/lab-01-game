@@ -1,0 +1,88 @@
+name: Publish Lab 8 release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run coverage:shared
+      - run: npm run build
+      - run: npm run production:smoke
+      - run: npm run chaos:check
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Set the container name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: metadata
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+            type=sha,format=long
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_VERSION=${{ github.ref_name }}
+      - name: Trigger the hosting provider deploy hook when configured
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_VERSION: ${{ github.ref_name }}
+        run: |
+          if [ -z "$DEPLOY_HOOK_URL" ]; then
+            echo "DEPLOY_HOOK_URL is not configured; the image was published to GHCR but no hosting provider was deployed."
+          else
+            if ! curl --fail --silent --output /dev/null --request POST "$DEPLOY_HOOK_URL"; then
+              echo "The hosting provider deploy hook failed."
+              exit 1
+            fi
+            if [ -z "$PUBLIC_BASE_URL" ]; then
+              echo "PUBLIC_BASE_URL is not configured; deployment was triggered but its live build stamp could not be verified."
+            else
+              PUBLIC_BASE_URL=${PUBLIC_BASE_URL%/}
+              deployed=0
+              for attempt in $(seq 1 60); do
+                health=$(curl --fail --silent "$PUBLIC_BASE_URL/health" || true)
+                if printf '%s' "$health" | jq -e --arg sha "$EXPECTED_SHA" --arg version "$EXPECTED_VERSION" '.gitSha == $sha and .version == $version' >/dev/null; then
+                  printf '%s\n' "$health"
+                  deployed=1
+                  break
+                fi
+                sleep 5
+              done
+              test "$deployed" -eq 1
+            fi
+          fi

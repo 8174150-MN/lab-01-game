@@ -36,7 +36,9 @@ it('closes a socket after its configured per-second message limit', async () => 
   await once(server, 'listening'); // Чекаємо, поки сервер почне приймати з'єднання.
   const address = server.address(); // Читаємо випадково призначений порт.
   if (!address || typeof address === 'string') throw new Error('Test server did not get a TCP port'); // Відхиляємо неочікувану форму адреси.
-  const socket = new WebSocket('ws://127.0.0.1:' + address.port + '/ws'); // Підключаємося до реального WebSocket endpoint.
+  const socket = new WebSocket('ws://127.0.0.1:' + address.port + '/ws', {
+    headers: { Origin: 'http://localhost:5173' },
+  }); // Підключаємося як браузер із дозволеного origin.
   try {
     await once(socket, 'open'); // Чекаємо завершення handshake.
     const joined = waitForMessage(socket, 'joined_success'); // Слухаємо підтвердження до відправлення join.

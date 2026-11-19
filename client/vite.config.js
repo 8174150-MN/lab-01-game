@@ -4,6 +4,10 @@ import { resolve } from 'node:path'; // Вказуємо Vite дві сторі�
 export default defineConfig({
   server: {
     proxy: {
+      '/health': {
+        target: 'http://127.0.0.1:' + (process.env.PORT ?? '3000'),
+        changeOrigin: true,
+      },
       '/api': {
         target: 'http://127.0.0.1:' + (process.env.PORT ?? '3000'),
         changeOrigin: true,

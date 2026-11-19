@@ -125,6 +125,30 @@ let asteroidTimer = 0; // Таймер періодичного створенн
 let defaultArena: ArenaConfig = { asteroidCount: 5 }; // Статичний arena.json задає значення за замовчуванням.
 const hud = createHud(hudElement); // Підписує HUD на події рахунку, життя й звуку.
 
+// Read the build identity from the same server that serves this page.
+async function loadBuildStamp(): Promise<void> {
+  try {
+    const response = await fetch('/health', { cache: 'no-store' }); // Ask the backend for its immutable build stamp.
+    if (!response.ok) throw new Error('health endpoint returned ' + response.status); // Keep a visible fallback for offline pages.
+    const payload: unknown = await response.json(); // Treat HTTP data as unknown until its fields are checked.
+    if (!isRecord(payload) || typeof payload.version !== 'string' || typeof payload.gitSha !== 'string') return;
+    hud.setVersion(payload.version + ' (' + payload.gitSha.slice(0, 7) + ')'); // Show release and commit in the HUD.
+  } catch (error: unknown) {
+    console.warn('[build stamp] Could not read /health:', error); // A local Vite page can still run while the server starts.
+  }
+}
+
+void loadBuildStamp(); // The game and lobby do not wait for this informational request.
+
+// Register the offline shell only in production; Vite development keeps HMR untouched.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((error: unknown) => {
+      console.warn('[PWA] Service worker registration failed:', error); // Installation errors never stop the game.
+    });
+  });
+}
+
 // Підганяємо backing store canvas під CSS-розмір і масштаб пристрою.
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1; // На звичайному екрані DPR дорівнює 1.
@@ -294,6 +318,15 @@ function joinGame({ room, name, arena, network }: JoinRequest): void {
     onBytes: (count) => networkGame?.graph.addBytes(count), // Рахуємо отриманий і відправлений трафік.
     onStatus: (status, data) => {
       if (status === 'joined' && isRoster(data)) showRoster(data.players);
+      if (playing && network.authoritative && (status === 'closed' || status === 'shutdown')) {
+        returnToLobby(
+          status === 'shutdown'
+            ? typeof data === 'string'
+              ? data
+              : 'Сервер перезапускається. Ти повернулася до кімнат.'
+            : 'З’єднання із сервером перервано. Ти повернулася до кімнат.',
+        );
+      } // Після зупинки сервера завершуємо матч і не шлемо старі input після повернення.
     },
   }); // Приєднуємося до сервера та слухаємо кімнатні події.
   networkGame?.setInputSender(session.sendInput); // У мережевому режимі передаємо кнопки серверу.
@@ -412,7 +445,7 @@ requiredElement('startButton', HTMLButtonElement).addEventListener(
 requiredElement('cancelLoading', HTMLButtonElement).addEventListener('click', () => loadController?.abort()); // Сигнал зупиняє поточний pipeline.
 
 // Кнопка виходу закриває сокет і повертає гравця в список кімнат.
-requiredElement('leaveGameBtn', HTMLButtonElement).addEventListener('click', () => {
+function returnToLobby(notice?: string): void {
   loop.stop(); // Зупиняємо рендер гри.
   stopPerformanceProbe?.(); // Зберігаємо короткий звіт, якщо гравець вийшов раніше 30 секунд.
   stopPerformanceProbe = null; // Не зберігаємо застаріле посилання для наступного матчу.
@@ -424,4 +457,7 @@ requiredElement('leaveGameBtn', HTMLButtonElement).addEventListener('click', () 
   requiredElement('leaveGameBtn', HTMLButtonElement).hidden = true; // Ховаємо кнопку виходу.
   requiredElement('lobby', HTMLElement).hidden = false; // Повертаємо лобі.
   lobbyView?.show(); // Оновлюємо список доступних кімнат.
-}); // Завершуємо вихід із матчу.
+  if (notice) lobbyView?.showNotice(notice); // Показуємо причину автоматичного повернення.
+} // Завершуємо повернення до кімнат.
+
+requiredElement('leaveGameBtn', HTMLButtonElement).addEventListener('click', () => returnToLobby()); // Кнопка вручну повертає гравця до лобі.

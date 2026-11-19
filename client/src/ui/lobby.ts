@@ -128,6 +128,10 @@ export function createLobbyView(lobby: Lobby, root: HTMLElement) {
 
   // Повертаємо команди видимості; запити живуть лише поки видно лобі.
   return {
+    showNotice(message: string) {
+      status.textContent = message; // Повідомляємо, чому гравець повернувся до кімнат.
+      retryButton.hidden = false; // Даємо негайно повторити оновлення після повернення сервера.
+    }, // Завершуємо показ повідомлення лобі.
     show() {
       root.hidden = false;
       lobby.start();

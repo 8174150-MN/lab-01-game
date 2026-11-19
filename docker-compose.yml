@@ -1,0 +1,43 @@
+services:
+  game:
+    build:
+      context: .
+      args:
+        BUILD_SHA: ${BUILD_SHA:-local}
+        BUILD_VERSION: ${BUILD_VERSION:-dev}
+    image: asteroids-game:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - '${HOST_PORT:-3000}:3000'
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      HOST: 0.0.0.0
+      BUILD_SHA: ${BUILD_SHA:-local}
+      BUILD_VERSION: ${BUILD_VERSION:-dev}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ENABLE_DEMOS: 'false'
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      MAX_CONNECTIONS_PER_IP: ${MAX_CONNECTIONS_PER_IP:-20}
+      MAX_ROOMS: ${MAX_ROOMS:-20}
+      MAX_PLAYERS_PER_ROOM: ${MAX_PLAYERS_PER_ROOM:-10}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+    volumes:
+      - game-logs:/app/logs
+    stop_grace_period: 10s
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/ready').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  game-logs:
