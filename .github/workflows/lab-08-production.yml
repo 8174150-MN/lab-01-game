@@ -56,7 +56,19 @@ jobs:
           curl --fail --silent --show-error http://127.0.0.1:3000/pwa-icon-512.png --output /dev/null
       - name: Check graceful Docker stop
         run: |
-          node scripts/docker-stop-check.mjs asteroids-lab8
+          set +e
+          node scripts/docker-stop-check.mjs asteroids-lab8 > /tmp/docker-stop-check.log 2>&1
+          check_result=$?
+          if [ "$check_result" -ne 0 ]; then
+            while IFS= read -r line; do
+              escaped=${line//'%'/'%25'}
+              escaped=${escaped//$'\r'/'%0D'}
+              echo "::error title=Graceful Docker stop check::${escaped}"
+            done < /tmp/docker-stop-check.log
+          else
+            cat /tmp/docker-stop-check.log
+          fi
+          test "$check_result" -eq 0
           exit_code=$(docker inspect asteroids-lab8 --format '{{.State.ExitCode}}')
           test "$exit_code" -eq 0
       - name: Add container shutdown diagnostics to the job summary
