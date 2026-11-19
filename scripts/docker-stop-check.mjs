@@ -36,6 +36,7 @@ await new Promise((resolve, reject) => {
 const joined = waitForMessage(socket, 'joined_success');
 socket.send(JSON.stringify({ v: 1, type: 'join', room: 'default_room', name: 'Docker smoke', format: 'json' }));
 await joined;
+console.log('Docker smoke client joined a room');
 
 // Observe shutdown before issuing the real Docker signal.
 let shutdownNotice = false;
@@ -56,22 +57,31 @@ const notice = new Promise((resolve, reject) => {
   });
 });
 const closeEvent = new Promise((resolve) => socket.once('close', (code, reason) => resolve({ code, reason })));
+const closeObserved = closeEvent.then((closed) => {
+  console.log(JSON.stringify({ websocketCloseCode: closed.code, websocketCloseReason: closed.reason.toString() }));
+  return closed;
+});
 const startedAt = Date.now(); // Measure the complete docker stop, including graceful cleanup.
 const stopProcess = spawn('docker', ['stop', '--time', '10', containerName], { stdio: 'inherit' });
 const stopResult = new Promise((resolve, reject) => {
   stopProcess.once('error', reject);
-  stopProcess.once('exit', (code) =>
-    code === 0 ? resolve(code) : reject(new Error('docker stop exited with ' + code)),
-  );
+  stopProcess.once('exit', (code) => {
+    console.log(JSON.stringify({ dockerStopExitCode: code }));
+    code === 0 ? resolve(code) : reject(new Error('docker stop exited with ' + code));
+  });
 });
-const [shutdownMessage, closed] = await Promise.all([notice, closeEvent]);
+const noticeObserved = notice.then((message) => {
+  console.log('Server sent the shutdown message');
+  return message;
+});
+const [shutdownMessage, closed] = await Promise.all([noticeObserved, closeObserved]);
 await stopResult;
 
 // Check the visible protocol signal, RFC close code, and assignment deadline.
 assert.equal(shutdownNotice, true);
 assert.equal(shutdownMessage.type, 'shutdown');
 assert.equal(closed.code, 1001);
-assert.ok(Date.now() - startedAt < 10_000, 'docker stop exceeded 10 seconds');
-console.log(
-  JSON.stringify({ shutdownMessage: shutdownMessage.type, closeCode: closed.code, stopMs: Date.now() - startedAt }),
-);
+const stopMs = Date.now() - startedAt;
+console.log(JSON.stringify({ dockerStopMs: stopMs }));
+assert.ok(stopMs < 10_000, 'docker stop exceeded 10 seconds');
+console.log(JSON.stringify({ shutdownMessage: shutdownMessage.type, closeCode: closed.code, stopMs }));
