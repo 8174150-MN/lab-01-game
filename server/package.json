@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch --env-file-if-exists=.env --import tsx src/index.ts",
+    "dev": "node --watch --require ../test-preload.cjs --env-file-if-exists=.env --import tsx src/index.ts",
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "test": "node --require ../test-preload.cjs --import tsx --test test/*.test.ts && vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",

@@ -231,6 +231,17 @@ export class Room extends EventEmitter<RoomEvents> {
     const player = this.clients.get(socket);
     if (!player || !isNewerSequence(input.seq, player.lastQueuedSeq)) return false;
     player.lastQueuedSeq = input.seq;
+    const lastPendingInput = player.inputQueue.at(-1); // Перевіряємо лише останній ще не оброблений стан клавіш.
+    if (
+      lastPendingInput &&
+      !lastPendingInput.shoot &&
+      !input.shoot &&
+      lastPendingInput.gas === input.gas &&
+      lastPendingInput.turn === input.turn
+    ) {
+      player.inputQueue[player.inputQueue.length - 1] = input; // Однаковий рух згортаємо до найновішої послідовності.
+      return true; // Сервер усе одно безперервно інтегрує попередній рух на кожному кроці.
+    } // Постріли не згортаються, бо це одноразова подія, а не стан клавіші.
     if (player.inputQueue.length >= 120) player.inputQueue.shift();
     player.inputQueue.push(input);
     return true;

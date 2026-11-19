@@ -29,6 +29,21 @@ async function readPlayer(page: Page, playerName: string): Promise<{ x: number; 
   }, playerName); // Передаємо ім'я в контекст браузера.
 } // Завершуємо читання стану іншого гравця.
 
+// Рахуємо кулі гравця в останньому серверному знімку.
+async function readBulletCount(page: Page, playerName: string): Promise<number> {
+  return page.evaluate((name) => {
+    const testWindow = window as Window & {
+      __lab7Snapshot?: () => {
+        players: Array<{ id: string; name: string }>;
+        bullets: Array<{ ownerId: string }>;
+      } | null;
+    }; // Читаємо лише типізований тестовий зріз авторитетного кадру.
+    const snapshot = testWindow.__lab7Snapshot?.(); // Беремо останній кадр, отриманий другим браузером.
+    const player = snapshot?.players.find((candidate) => candidate.name === name); // Знаходимо власника пострілів.
+    return snapshot && player ? snapshot.bullets.filter((bullet) => bullet.ownerId === player.id).length : 0; // Рахуємо тільки його активні кулі.
+  }, playerName); // Передаємо ім'я пілота у браузерний контекст.
+} // Завершуємо підрахунок куль.
+
 test('two browser contexts see each other move and receive chat', async ({ browser }) => {
   const firstContext = await browser.newContext(); // Створюємо окрему сесію першого пілота.
   const secondContext = await browser.newContext(); // Створюємо окрему сесію другого пілота.
@@ -59,6 +74,9 @@ test('two browser contexts see each other move and receive chat', async ({ brows
     await first.locator('#chatInput').fill('hello from browser one'); // Вводимо повідомлення в чат першого гравця.
     await first.locator('#chatForm button').click(); // Надсилаємо повідомлення штатною кнопкою.
     await expect(second.locator('#chatMessages')).toContainText('hello from browser one'); // Перевіряємо доставку в інше вікно.
+    const bulletsBefore = await readBulletCount(second, 'Pilot One'); // Запам'ятовуємо кількість куль до команди пострілу.
+    await first.keyboard.press('Space'); // Надсилаємо один звичайний натиск пробілу першому пілоту.
+    await expect.poll(() => readBulletCount(second, 'Pilot One'), { timeout: 500 }).toBeGreaterThan(bulletsBefore); // Другий клієнт швидко бачить кулю, створену сервером.
   } finally {
     await Promise.all([firstContext.close(), secondContext.close()]); // Закриваємо кімнатні сесії навіть після помилки.
   } // Завершуємо сценарій двох гравців.
