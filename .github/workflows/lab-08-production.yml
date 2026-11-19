@@ -62,9 +62,16 @@ jobs:
       - name: Add container shutdown diagnostics to the job summary
         if: failure()
         run: |
+          state=$(docker inspect asteroids-lab8 --format '{{json .State}}' 2>&1 || true)
+          echo "::error title=Docker container state::${state}"
+          docker logs --tail 40 asteroids-lab8 2>&1 | while IFS= read -r line; do
+            escaped=${line//'%'/'%25'}
+            escaped=${escaped//$'\r'/'%0D'}
+            echo "::error title=Recent Node server log::${escaped}"
+          done
           {
             echo '## Docker shutdown diagnostics'
-            docker inspect asteroids-lab8 --format 'Container state: {{json .State}}' || true
+            echo "Container state: ${state}"
             echo 'Recent Node server logs:'
             docker logs --tail 40 asteroids-lab8 2>&1 || true
           } >> "$GITHUB_STEP_SUMMARY"
