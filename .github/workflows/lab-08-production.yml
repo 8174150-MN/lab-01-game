@@ -59,6 +59,15 @@ jobs:
           node scripts/docker-stop-check.mjs asteroids-lab8
           exit_code=$(docker inspect asteroids-lab8 --format '{{.State.ExitCode}}')
           test "$exit_code" -eq 0
+      - name: Add container shutdown diagnostics to the job summary
+        if: failure()
+        run: |
+          {
+            echo '## Docker shutdown diagnostics'
+            docker inspect asteroids-lab8 --format 'Container state: {{json .State}}' || true
+            echo 'Recent Node server logs:'
+            docker logs --tail 40 asteroids-lab8 2>&1 || true
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Remove the test container
         if: always()
         run: docker rm --force asteroids-lab8 || true
