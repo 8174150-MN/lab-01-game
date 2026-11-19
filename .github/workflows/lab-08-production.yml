@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   verify:
@@ -71,6 +72,19 @@ jobs:
           test "$check_result" -eq 0
           exit_code=$(docker inspect asteroids-lab8 --format '{{.State.ExitCode}}')
           test "$exit_code" -eq 0
+      - name: Sign in to GHCR for the Render preview image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/lab-07-v8-testing'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the tested preview image for Render setup
+        if: github.event_name == 'push' && github.ref == 'refs/heads/lab-07-v8-testing'
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:lab-08-preview"
+          docker tag asteroids-game:lab-08 "$image"
+          docker push "$image"
       - name: Add container shutdown diagnostics to the job summary
         if: failure()
         run: |

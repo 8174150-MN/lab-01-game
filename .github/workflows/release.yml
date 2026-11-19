@@ -65,7 +65,10 @@ jobs:
           if [ -z "$DEPLOY_HOOK_URL" ]; then
             echo "DEPLOY_HOOK_URL is not configured; the image was published to GHCR but no hosting provider was deployed."
           else
-            if ! curl --fail --silent --output /dev/null --request POST "$DEPLOY_HOOK_URL"; then
+            image_url="ghcr.io/${GITHUB_REPOSITORY,,}:${EXPECTED_VERSION}"
+            encoded_image_url=$(jq -rn --arg image "$image_url" '$image | @uri')
+            deploy_url="${DEPLOY_HOOK_URL}&imgURL=${encoded_image_url}"
+            if ! curl --fail --silent --output /dev/null --request POST "$deploy_url"; then
               echo "The hosting provider deploy hook failed."
               exit 1
             fi

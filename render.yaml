@@ -1,0 +1,34 @@
+# Render uses this Blueprint to create the single free WebSocket service.
+services:
+  - type: web
+    name: asteroids-game-lab-08
+    runtime: image
+    region: frankfurt
+    plan: free
+    numInstances: 1
+    maxShutdownDelaySeconds: 10
+    healthCheckPath: /ready
+    image:
+      url: ghcr.io/8174150-mn/lab-01-game:lab-08-preview
+      creds:
+        fromRegistryCreds:
+          name: github-packages
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: '10000'
+      - key: HOST
+        value: 0.0.0.0
+      - key: ENABLE_DEMOS
+        value: 'false'
+      - key: TRUST_PROXY
+        value: 'true'
+      - key: LOG_LEVEL
+        value: info
+      - key: MAX_ROOMS
+        value: '20'
+      - key: MAX_PLAYERS_PER_ROOM
+        value: '10'
+      - key: MAX_CONNECTIONS_PER_IP
+        value: '20'

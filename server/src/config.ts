@@ -82,10 +82,19 @@ const environmentSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   BUILD_SHA: z.string().trim().min(1).max(64).default('dev'),
   BUILD_VERSION: z.string().trim().min(1).max(64).default('dev'),
+  // Render adds its public HTTPS URL to web services at runtime.
+  RENDER_EXTERNAL_URL: z
+    .string()
+    .trim()
+    .url()
+    .optional()
+    .refine(
+      (value) => value === undefined || (new URL(value).protocol === 'https:' && new URL(value).origin === value),
+    ),
 });
 
 export type ServerEnvironment = z.infer<typeof environmentSchema>;
-export interface ServerConfig extends ServerEnvironment {
+export interface ServerConfig extends Omit<ServerEnvironment, 'RENDER_EXTERNAL_URL'> {
   readonly DIST_DIR: string;
 }
 
@@ -96,9 +105,15 @@ if (!parsedEnvironment.success) {
   throw new Error('Invalid server environment: ' + details);
 }
 
+// Відокремлюємо адресу Render від основної конфігурації після Zod-перевірки.
+const { RENDER_EXTERNAL_URL, ...validatedEnvironment } = parsedEnvironment.data;
+const allowedOrigins = new Set(validatedEnvironment.ALLOWED_ORIGINS);
+if (RENDER_EXTERNAL_URL) allowedOrigins.add(RENDER_EXTERNAL_URL); // Дозволяємо браузерний сайт, виданий Render.
+
 // Обчислюємо шляхи лише після успішної перевірки оточення.
 export const config = Object.freeze({
-  ...parsedEnvironment.data,
-  LOG_DIR: path.resolve(parsedEnvironment.data.LOG_DIR),
+  ...validatedEnvironment,
+  ALLOWED_ORIGINS: [...allowedOrigins],
+  LOG_DIR: path.resolve(validatedEnvironment.LOG_DIR),
   DIST_DIR: path.resolve(process.cwd(), 'client/dist'),
 }) satisfies ServerConfig;

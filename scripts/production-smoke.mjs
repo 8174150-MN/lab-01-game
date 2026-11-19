@@ -63,6 +63,7 @@ const child = spawn(process.execPath, ['server/dist/server/src/index.js'], {
     HOST: '127.0.0.1',
     LOG_DIR: logsDirectory,
     ALLOWED_ORIGINS: 'http://localhost:3000',
+    RENDER_EXTERNAL_URL: 'https://asteroids-smoke.onrender.com',
     MAX_CONNECTIONS_PER_IP: '1',
     BUILD_SHA: 'production-smoke-sha',
     BUILD_VERSION: 'lab-08-smoke',
@@ -128,7 +129,7 @@ try {
 
   // Join one live room so shutdown has a real participant and match log to close.
   socket = new WebSocket('ws://127.0.0.1:' + port + '/ws', {
-    headers: { Origin: 'http://localhost:3000' },
+    headers: { Origin: 'https://asteroids-smoke.onrender.com' },
   });
   await new Promise((resolve, reject) => {
     socket.once('open', resolve);
