@@ -166,6 +166,27 @@
         z-index: 12;
         color: #66fcf1;
       }
+      /* Кнопка виходу має бути видимою під час гри, а не в потоці після Canvas. */
+      #leaveGameBtn:not([hidden]) {
+        position: absolute;
+        right: 15px;
+        bottom: 15px;
+        z-index: 16;
+        padding: 9px 13px;
+        border: 1px solid #45a29e;
+        border-radius: 6px;
+        background: #45a29e;
+        color: #0b0c10;
+        font: 600 13px monospace;
+        cursor: pointer;
+      }
+      #leaveGameBtn:not([hidden]):hover {
+        background: #66fcf1;
+      }
+      #leaveGameBtn:not([hidden]):focus-visible {
+        outline: 2px solid #fff;
+        outline-offset: 2px;
+      }
       /* Атрибут hidden має приховувати елементи незалежно від стилів компонентів. */
       [hidden] {
         display: none !important;
